@@ -1,0 +1,63 @@
+lb服务器需要记录分配给当前客户端的流媒体服务器地址，记录到什么地方呢，首先是userMap，这一个uid对应一个客户端需要的所有的服务器信息，还有一个是流媒体服务器的负载情况更新。下线的时候别忘记清理流媒体服务器的负载情况。。。所以这就是lb服务器需要做的任务。（lb服务器已经知道客户端的udp地址了，所以后续不需要客户端提供了），客户端获取udp服务器地址之后，会自动发一个请求给流媒体服务器，先询问对方支持的协议，以及功能，并且发送请求播放当前电影的请求。（lb服务器需要一个fid对应的服务器集群吧，如果当前有服务器播放该视频，且没有超负载，那么可以直接返回该地址，如果没有服务器播放该地址，需要创建一个fid对应的映射（上面的userMap对应的服务器信息，只是当前用户正在使用的地址）），后续就是推流拉流播放了，如果停止（不是暂停）或者是切换到其他电影，则先断掉连接，（不对，流媒体服务器需要存储当前uid的地址集群，否则有客户端断掉了，你还在推），（如果切换电影，则再进行上面的操作）
+所以目前需要解决的是房间服务器（一个fid的映射）（至于serverMap这个结构存储的流媒体服务器集群是总体的，他只负责维护最终的服务器负载情况，至于推流情况他不管，一个流媒体服务器也可以推多个房间的流，所以还应该新增一个类似map<fid, set<ServerAddr>>的结构）（这个set的作用是分配当前房间服务器集合中最好的那个服务器，所以还需要对他排一下序，但是这个时候应该使用的是ServerCondition*吧，但是这是个指针，同一个指针能同时在两个set中排序吗？可以是可以，但是需要在更新房间的服务器信息时，更新总服务器排序信息，但是如果总服务器信息率先改变了，怎么办？），还有就是流媒体服务器应该存储正在给哪些客户端<serverAddr, sockaddr_in集合>服务（sockaddr_in集合这个需要很快速的找到，并且很快速的添加和删除，可以不用排序）
+不过根据lbService在submit中的注释，不能使用map<fid, set<ServerServiceCondition*>>的结构，绝对不行，必须是map<fid, set<ServerAddr>>的结构，那房间内的负载该怎么排序？唯一的做法是在ServerMap里创建map<fid, set<ServerServiceCondition*>>，然后更新的时候同步进行即可，那<serverAddr, sockaddr_in集合>这个信息怎么存，完全可以设计成map<fid, map<ServerServiceCondition*, unordered_set<sockaddr_in>>>，这个结构就很完美了。不过fid并不需要排序，所以可以设计成unordered_map<fid, map<ServerServiceCondition*, unordered_set<sockaddr_in>>>。完美，最终的版本是std::unordered_map<int, std::map<ServerServiceCondition*, std::unordered_set<sockaddr_in, GetSockAddrHashCode, SockAddrIsEqual>, ServiceConditionCmp>>m_mediaRoomMap;
+那响应的接口函数该怎么设计呢（原来的删除的时候怎么改）难道要遍历所有的fid，然后删除？感觉需要将ServerCondition变成unordered_map<ServerAddr, ServerCondition*, GetHashCode>，由于这个设计嵌套的太深，为了提取方便，可以设计一些函数返回对应的项，不对，完全可以使用之前的这个：	std::unordered_map<ServerAddr, ServerCondition*, GetHashCode>m_serverMap;，这个的ServerAddr异同的判断可以增加一个模块id是否相同来判断（这样的话，一个服务器可以服务多种类型）（插入删除有影响吗，没有影响，因为ServerServiceCondition不管ip和port一不一样，一定是独一无二的，后续排序都是基于ServerCondition了，所以只要m_serverMap中的key不重复就可以），所以还是std::unordered_map<int, std::map<ServerServiceCondition*, std::unordered_set<sockaddr_in, GetSockAddrHashCode, SockAddrIsEqual>, ServiceConditionCmp>>m_mediaRoomMap;这个就行
+增加的成员函数应该包括哪些：ServerMap应该增加getMediaServerClient和getMediaServerMap，然后路由更新的时候需要进行一些改进，lb服务器那里应该完善获取一个流媒体服务器的逻辑（如果只有这一个函数，那么如果切换fid的时候，需要lb服务器查询对应的mediaMap，然后删除掉上面的信息，如果这里只是简单的返回一个当前fid较好的可用的server，不进行其他操作，那么需要增加其他协议，在点击fid的时候，先发送清除之前观看记录的请求，然后再发送获取一个server的请求，再或者发送请求的时候发送一个从哪个房间到哪个房间的请求，这个也是挺好的），以及改进停止服务（下线）的逻辑，我打算采取第一种方式结合（请求从哪个房间到哪个房间的方式），但是服务器端也应该增加一个当前客户端的fid的对应关系，如果两者相同，那么请求合法，否则不合法。那就应该增加一个查找user对应的media的函数
+突然发现std::unordered_map<int, std::map<ServerCondition*, std::unordered_set<sockaddr_in, GetSockAddrHashCode, SockAddrIsEqual>, ServiceConditionCmp>>m_mediaRoomMap;这个std::unordered_set<sockaddr_in, GetSockAddrHashCode, SockAddrIsEqual>可以设计成std::unordered_set<int>，因为lb服务器属性中记录了sockaddr_in，所以可以改成std::unordered_map<int, std::map<ServerCondition*, std::unordered_set<int>, ServiceConditionCmp>>m_mediaRoomMap;。不过正如上面提到的增加一个当前客户端的fid的对应关系，还应该增加一个std::unordered_map<int,int>的结构,key是uid，value是fid，但是这个应该放在哪里呢（lb？还是ServerMap），感觉这应该是属于lb服务器的属性，因为代表的是当前user在看什么电影，所以应该是lb的属性更好一点。但是感觉嵌合在lb中的std::unordered_map<int, std::pair<ServerAddr, sockaddr_in>> user_ServerMap更合理，因为user_ServerMap代表的就是所有的信息，那就定义一个结构体了，里面存储当前用户的基础服务器，流媒体服务器，当前在看的电影fid，当前用户的udp地址
+
+在删除和增加的当前服务器服务对象的时候发现，clientSet需要频繁重复复制，非常的低效，所以打算数据结构改成std::unordered_map<int, std::map<ServerCondition*, std::unordered_set<int>*, ServiceConditionCmp>> m_mediaRoomMap;，也就是由原来的 std::unordered_set<int>变为了 std::unordered_set<int>*（不过好像可以通过swap交换避免，先交换，再赋值，但是在分配的时候必须要注意代码的执行顺序，除非提前保存了对应的迭代器，这是在写分配的逻辑的时候的一些代码：
+for (auto it = roomServers[fid].begin(); it != roomServers[fid]; it++) {
+			targetServerCondition = it->first;
+			if (!targetServerCondition->isFullLoad()) {
+				targetServer = targetServerCondition->m_addr;  //只要有一个不是满负载，那就得到有效的服务器了
+				//更新负载情况（需要更新两个地方的负载排序，以及当前服务客户端集合，还有user_ServerMap的value值，上面的if也是）
+				targetServerCondition->m_clientNums += 1;
+				roomServers[fid][targetServerCondition].insert(uid);   //注意这里插入的是旧的集合中，后面进行交换
+
+				//roomServers[fid].insert(targetServerCondition); //2❌  //不能简单的这样插入，其实value是一个对组，这样插入必将失败，一定要连着将map和对应的set一起加入删除
+				std::unordered_set<int> clientSet;
+				clientSet.swap(roomServers[fid][targetServerCondition]);  //2
+				//在交换之前，不能删除原来的targetServerCondition，因为找不到对应的set，除非提前保存
+				roomServers[fid].erase(targetServerCondition);  //roomServers[fid]为std::map<ServerCondition*, std::unordered_set<int>*>
+				//roomServers[fid]在删除之前不能更新updateServer，因为如果更新，那就找不到对应的it，除非提前保存下来
+				serverMap.updateServer(targetServerCondition);   //1
+				//更新完总的服务器负载之后之后才能插入当前房间的负载排序，因为不更新，插入的还是旧的
+				roomServers[fid][targetServerCondition] = clientSet;  //但是这个会进行值拷贝吧，效率会比较低。。。。这个要改进
+			}
+		}
+会发现非常杂乱，如果用指针就好很多。
+虽然这两方面都可以避免，但是感觉还是指针更方便一些，只要保证为0的时候，删除该对象，分配新的服务器的时候，new出来即可）
+在写返回流媒体服务器的时候，发现请求server需要更改，需要同时包含uid和fid，所以后期需要更改一下
+最终的思路（中间的一些思路可能记在源文件注释里了，可以去那看看）：
+//不对，思考了一下，后面还需要提供一个供lb服务器的getServer重载，这个是专门针对m_mediaRoomMap提供的，而之前的那两个是都能使用的，因为外界肯定需要获取流媒体服务器，所以必须要再提供一个getServer
+//到时候那个getServer会分3种情况往外界返回服务器地址，如果有当前房间，且负载良好，然后执行update即可，如果没有当前房间，那么需要这个专门的getServer需要调用getServer,去获取总的服务器里面的地址
+//这个时候获取完之后，需要new一个std::unordered_set<int>*，然后往里添加一些元素，并且更新获取到的server负载，然后update，如果是删除，那么需要获取指定的server,然后查找到对应的房间，
+//删除掉对应的uid，然后update，（这个时候包含排序和清理掉可能存在的多余的fid，不太对，如果这个uid是当前房间的最后一个元素，那么如果交给update之后，由于ServerCondition已经清理掉了这个为0的房间的标记
+//所以update时根本感知不到这个空房间，所以需要在外界进行更改），最终可以采取这样的策略：get之后，如果是删除，那么update可以感知到，上层不要清理掉空房间，仅仅是清理掉人数，然后交给update去处理
+//如果是添加，那么外界必须要new一个new一个std::unordered_set<int>*，然后放到对应的房间里，交给update去更新，如果是后期反馈包更新，那就很好办了，直接取出对应的server，然后更新即可。也就是外界
+//需要提供房间更新的所有条目，但是房间的释放与否，服务器即使在当前房间空转，也不需要外界操心，由updateServer统一管理
+最终实现或者改进3个函数，submit，这个改进了如果停止某台服务器之后后续的清理工作，updateServer负责对房间的ServerCondition排序，以及m_serviceConditionMap进行排序，以及如果房间为空的后续房间释放的问题；getServer负责返回流媒体地址，并且保证如果房间不存在创建对应房间的工作，基本就这三个函数，职责划分的还算合理；还有一个给外界提供的（添加当前服务器服务的人员名单）辅助函数，可能后续还有一些辅助函数，不过这都无关紧要了，大的职责划分的已经合理了。lb服务器则是负责维护他自己的user_serverMap
+
+下面是真正涉及到流媒体服务器的设计了，其实主要是读文件解封装，发送数据等等，这个设计主要是看了b站up主（你是周小哥啊）的大致的讲解，然后还看了另一个up主的，但是这个up是直接使用ffplay调用的，感觉不可行。然后在网上又了解了一些博客（很多），发现基本上都是按照b站up主（你是周小哥啊）里面讲的ffpaly的流程走的。（这个时候框架基本上就有了，依赖ffmpeg的结构体以及对应的函数，然后操作对应的结构体就行，然后就是读，解封装，解码，音视频同步，输出）（这个时候就需要编译安装ffmpeg，然后了解结构体（目前在做））但是我还需要考虑网络数据的传输，这个其实需要RTSP或者RTMP再或者webRTC等协议了（自定义结构体不行吗，或者直接传输一帧数据过去不行吗？不行，因为一帧可能几万个字节，这远远超过udp的最大传输单元了，你必须要拆开，这个时候自定义结构体就无能为力了，只能借助流媒体传输协议RTSP或者其他，而且可能上层还需要包裹一层自己的protobuf协议，或者说protobuf定义一个rtp协议，这样可能传输字节数更少，而且流媒体服务器肯定还需要其他信息的互动，所以必须再封装一层），所以流媒体服务器端其实负责读取，解封装得到一帧数据，然后封装成rtp包，发给房间的某个主机，这里其实需要控制发送频率，因为一个音频帧是24ms左右，视频是40ms左右，也就是客户端那边24ms才消耗一帧，而且客户端因为网络情况，可能消耗情况还不一致，这就导致服务器其实同一时刻发的帧给各个客户端的帧在小范围内是不一致的，这其实需要服务器给各个用户一个当前帧的索引（如果客户端队列那边帧满了， 需要发送一个信号告诉服务器这边不要发了，但是服务器不会给他发，会给其他客户端发，如果又让发了，如果当前帧索引不在服务器的队列范围内，那就发当前队列的最早的那个了）；客户端这边其实从队列读取帧，然后解码（从h264解出一帧数据），然后音视频同步，播放就可以了，这个就是大体的思路了。（在设计客户端时这篇文章很重要https://blog.csdn.net/leixiaohua1020/article/details/12980423）
+
+下面是流媒体服务器具体的设计了
+其实发送方式有两种，一种是发送网络流，发送端发送一些特定协议的包，而客户端可以读取特定协议的包并播放（雷霄骅：https://blog.csdn.net/leixiaohua1020/article/details/14215369），但是这样需要客户端单独写一个udpsocket（然后后续的读写工作就交给ffmpeg了，由ffmpeg进行读写），不能使用reactor集成好的，因为我的reactor必须要调用回调函数，前8个字节是固定的；第二种方式是发自己的包，发的是裸流，然后客户端解裸流即可得到，这个时候就依赖上面那篇重要的文章了
+设计的时候参考了https://gitee.com/zhou_xintong/ffmpegplayer/tree/master，打算把ffmepeg单独放到一个文件夹下，然后设计Avdemuxer，来解封装，对于rtsp协议，则是放到tools文件夹下，然后结构体在mediaService实现，tools实现响应的交互功能，相当于rtsp这个文件夹实现了rtsp的协议（注意一开始是打算把rtsp放到流媒体服务器文件夹下，但是后来想到客户端也要解析rtp和rtsp协议（https://blog.csdn.net/King_weng/article/details/107669092，可以看到里面的交互过程），所以最终放到tools文件夹下，后续如果想增加对应的webRTC，直接增加一个文件夹即可），然后就是mediaServer的Room类，负责维护当前房间的运行，比如增加删除user，停止播放，发送帧数据等等，注意，标准的rtsp服务器是使用tcp作为rtsp的协议的传递的，然后由udp传递实际数据，不过我现在暂时全都由udp进行，这样设计就不用再增加一个tcpServer了；最后是mediaServer类的实现，这个负责和lb服务器通信，然后增删房间，注意用户的增删是客户端和mediaServer单独进行的，lb服务器提供一个地址就行了，至于lb服务器种用户的添加和删除，客户端可以和lb服务器沟通，media服务器也可以同步，不过这都是后续的事情了）
+
+但是在设计rtp头结构嵌合到protobuf的时候（嵌合的解析可以参考这篇文章，https://blog.csdn.net/mo4776/article/details/82319084，讲述了如何位移解析），出现了问题，就是很多博客网站（https://blog.csdn.net/BABY313/article/details/7363528，还有这一篇https://blog.csdn.net/qq_16334327/article/details/107005908），包括我之前写的rtsp服务器的字节内标志位顺序（位域，详细可以看https://zh.cppreference.com/w/cpp/language/bit_field，通俗来说，多个位域可以使用同一个标准的数据类型）是反着的，之前设计的时候根本没注意到这个，或者说注意到了也简简单单认为是大小端的问题，而且发现单字节的不转换为网络字节序，而后面的多字节需要在发送前需要转换为网络字节序，然后再转换回来，（可以看之前rtsp服务器具体的设计），单字节不是不用考虑字节序的问题吗（很多文章都提到了，比如https://blog.csdn.net/lqy971966/article/details/93602177），为啥要设计的顺序不一致呢？这就很奇怪了，不搞懂这些，根本没法往下写，于是研究了好几篇文章（
+	首先是这篇比较好懂的这篇文章https://zhuanlan.zhihu.com/p/554276852（不过关键地方没有讲太明白）：主要引出了我的疑惑，和我的疑惑一模一样，并且引出了比特序区分大小端的概念和位域的概念，然后说了比特序的发送过程，和接收过程，不过我感觉他说的先发送低字节，我认为是错误的，但是整体认识上是正确的，或者说他说的不清不楚，应该明确指出msb，lsb的概念，后面他引出位域之后，介绍的就比较含糊了。还有一点是这篇文章提出了大部分网络协议都是大端，这个很关键，也就是发送数据之前需要按照协议，转换为大端模式，否则字节间就有问题
+	然后是第二篇核心文章：https://blog.csdn.net/chen_xing_hai/article/details/126279425，这篇文章系统的阐述了发送过程，这里简单概述如下：严格说明了以太网在发送数据的时候是怎么发送的，首先指出以太网发送数据时，不管大小端一定是先发低字节，再发高字节（这个我在写这里的笔记的时候才发现的，这个原则我是参考的其他文章的），注意这里说的是字节，比如int a = 0x12345678，如果是大端，高位存在低地址上，那么就会先发0x12，如果是小端，高位存在高地址上，那么就先发0x78，接收的也是一样，先接收低字节，再接收高字节（这里这篇文章没有明确提出多字节的大小端解决方法，https://blog.csdn.net/qq_30576521/article/details/126684004这篇文章明确指出了（后面就不解析这篇文章了）:"根据RFC791，网络传输时（精确地说是使用IP协议进行网络传输时）以太网采用大端字节序，即先发送位置更高（重要，significant）的字节。对于0x78563412来说0x78位置更高，这就产生了一个问题，也就是不管CPU是大端还是小端，根据RFC791 Figure 10，只要低地址0x34存着数据0x12，就应当先发送数据0x12（实际上，网卡发送数据时也都是从低字节处开始发送，不论端序如何）。而当在小端系统中存储0x78563412时，其在内存中的表示如下图所示。按照RFC791，将发送0x12，但是按照大端序，却应对先发送0x78. 因此C语言提供了htonl和ntohl这两个函数来帮我们解决主机字节序与网络字节序之间的转换问题。在发送数据前和接收数据后先通过这两个函数对字节序进行转换。"，也就是多字节序列问题，如果主机是大端序，是没有问题的，网卡要求先发送msb，而主机如果是大端序的话，低地址刚好存储的就是msb，所以逻辑上恰好。但如果主机是小端int，你想发到对面，就会产生上面的问题，c语言已经提供了大小端的转换函数比如short的ntohs，long的ntohl，等等，如果你不做转换，那么网卡直接发送的是低地址，认为低地址就是msb，对端接收的时候，也认为先收到的是msb，这个时候其实并不是msb，而是lsb，那么多字节间就会出现顺序问题。但是我的项目前面通过protobuf发送到对端的时候都没有做转换呀，为啥对呢，如果是字符串是不需要考虑大小端的，但是我那有int呀，这个就很巧了，我的所有的数据底层都是char* buf[]，而这个是单字节数据，完全不需要考虑字节序问题，所以没有问题，但是如果使用位域，则必须要考虑字节序了，这个就在后面）。然后严格提出了单字节内比特序列的发送过程：在发送bit数据的时候，先发送MSB，最后发送LSB，即最先发送数学层面上权重最大的位，即最左边的bit数据；接收bit数据的时候，先收到MSB，最后收到LSB，即将最先收到的bit数据，移位存储到数学层面上权重最大的位所在存储器中，即最左边的bit中。MSB和LSB并非存储意义上的大小端，而是数字层面上高位与低位，权重高的为高位，权重低的为低位（这个其实是有疑问的，后面我看的这篇文章说https://blog.csdn.net/qq_30576521/article/details/126684004不确定有没有严格执行）。这句话很关键，根据这段话可以完全解释为啥单字节不需要考虑字节序，但是如果是位域的话，必须要考虑位域，注意现在目光全都聚焦在单字节内，多字节前面那句话已经很清晰了， 比如，当前博客举的例子（改了数字），大端字节序存储字符“+”，ascii码为0010 1011，大端电脑存储为[0:7]1101 0100，发送的时候是要先发msb的（bit0），所以会先发1 然后1-1-0-1-0-1-0-0，对端网卡接收的时候，先接收到的比特会认为是msb，所以如果对端是小端，网卡会依次放到[7:0]1101 0100，如果是对端是大端，会依次放到[0:7]1101 0100，也就是对端网卡会根据对端主机是否是大端，将当前字节存储好，这个时候小端电脑能够正常解析出字符1，大端电脑也能正常解析出字符1（因为大端电脑的高位是存放低地址，他会将低地址的权重乘以对应的数据，然后查找ascii表，就可以正确解析出+），但是如果是位域，就不行了，还是发送ascii码为0010 1011，不过我规定的是高4位是一个命令cmd，低四位是cmd的一个参数，在大端字节序的电脑上存储的是[0:7]1101 0100，然后发送顺序和上面一样），小端电脑会接收为[7:0]1101 0100，大端电脑会接收为[0:7]1101 0100，但是小端电脑如果取出cmd命令，（注意大端电脑高4位赋值的时候是赋值给0-3的）也就是会取出高4位（会取7-4的）（也就是取逻辑上的高8位），好像是正确的，因为位运算取高地址，取的是逻辑上的高地址，（https://blog.csdn.net/haiross/article/details/47082885），这样的话取高四位还是0010。如果是结构体呢，a成员是前4位，b成员是后四位，那么两端的结构体定义一致，发送端的结构体a为1101，b为0100，那么发送端发送的还是1-1-0-1-0-1-0-0，接收情况：小端电脑是[7:0]1101 0100，大端电脑是[0:7]1101 0100，注意一句话”C/C++的结构体有一个规定，无论大端还是小端，先定义的成员一定是低字节和低位。“，所以小端电脑a成员是低4位也就是0100，b成员是高4位也就是1101，这就错位了，而大端电脑能正确解析。
+	第三篇文章：https://blog.csdn.net/qq_30576521/article/details/126684004这个上面已经解释过了，就不解释了。但是有个小细节，就是IP协议是大端，那么由于version字段的位置，根据RFC791要求，应当先发送version字段，这个很关键）
+括号里面已经很详细的解释了为何位域需要颠倒位置，这里不过多介绍，不过值得一提的是，我这个rtp协议，目前其实是针对小端机的，也就是服务器这边是小端，客户端那边也是小端，后续服务器和客户端两端可以增加大端的判断和解析。
+
+怎么设计我的protobuf呢？参考下面这篇文章，字节内顺序不需要颠倒，比如rtp规定的为csrclen extension，那么就按照这个顺序赋值即可，因为接收端取时是直接取对应位置（逻辑）上的，取对应位置上就是正确的，但是取地址低4位就是错误的，字节间顺序需要吗？肯定需要呀，尽管uint16_t seq是最后存储到char*里了，但是这个不是单字节，
+https://blog.csdn.net/mo4776/article/details/82319084，不过这篇文章和我的还不太一样，不过可以借鉴。一句话，只要保证最终按照发送的顺序是按照rtp的协议字段顺序发送的就行了
+
+然后在设计avdemuexr的时候，发现解封装之后的avpacket不能直接使用，然后查询了一些博客：发现以下问题
+在解封装之后，得到每个avpacket之后，需要加上前导码，如果是关键帧，需要加上pps和sps信息，avpacket中只有h264解封装的原始数据，不能直接传到客户端，传过去对端也没法解码（MP4封装格式是基于QuickTime容器格式定义，媒体描述与媒体数据分开。从MP4得到的H264和AAC码流是ES流，它们缺失解码时必要的起始码/SPS/PPS和adts头。）如果不传输的话，可以直接解封装，然后解码，但是如果传递的话，也就是传递解封装之后的h264码流，必须加上起始码/SPS/PPS和adts头。
+客户端从内存中读取rtp包，解封装，参考https://blog.csdn.net/leixiaohua1020/article/details/12980423，到这信息流算是打通了，但是发现不太对劲，https://blog.csdn.net/y601500359/article/details/98941053。但是全网找了很多很多，es，pes，ps流都说的不清不楚的，所以现在不打算研究这些了，询问了两个大牛，他们都是说太麻烦了，直接传输rtp流即可，也就是我一开始想的那种方式
+然后从网上找了两份解封装的博客：//参考的连接：https://blog.csdn.net/weixin_43796767/article/details/116785419，还有一篇，那个在标签页，我没找到
+
+在解决了这个之后，信息流就打通了，下面说说具体的设计细节：
+首先是rtsp（在tools文件夹下，因为客户端也需要协议，以后想增加其他协议很方便），其中包含两个类，一个类是rtp的类，他是负责将上层传递的帧转为rtp包， 并保存下来，并且定时删除过期的包（就是都发送完的），还有就是负责发送一帧的rtp包（注意是一帧，不是一个rtp包），rtsp只是负责一些播放前的简单的交互逻辑，这里不过多介绍（使用的是udp传输rtsp协议）
+其次是ffmpeg模块，服务器方面只有解封装这一个，他负责定时的解封装一个文件的一个帧，并且关键帧前加上sps和pps，然后放到队列中去，另外就是media服务器模块，房间类负责增删用户，定时的给当前房间的所有用户发送帧，然后是服务器类，她负责增删房间，以及和lb服务器通信，当然了肯定要增加一个media的proto协议，基本就是这些

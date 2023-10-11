@@ -1,0 +1,1766 @@
+1、lb服务器返回地址的时候，关于保存旧的server的it，取出时的问题
+std::unordered_set<int>* clientSetPtr = (*(*serverIt)).second; 注意右边必须两层**，否则会报错
+
+2、注意这个playingIt加加的方式，很有技术含量
+	auto roomIt = roomId.begin();
+					auto playingIt = server->m_playingFid.begin();  //标记m_playingFid中当前roomIt的下标位置，注意这里必须使用 server->m_playingFid，因为我要删除的元素对象就是他
+					for (; serverIt != serversIt.end(); serverIt++, roomIt++) { //serverIt是一个pair，即<ServerCondition*, std::unordered_set<int>*, ServiceConditionCmp>>这种类型
+						//记录当前服务器服务的客户端集合地址，注意serverIt是vector的迭代器，(*serverIt)才是元素本身，但是这个元素是迭代器，所以还要(*(*serverIt))才是pair，已记录在流媒体相关的bug中
+						std::unordered_set<int>* clientSetPtr = (*(*serverIt)).second; 
+						ServerCondition* curServer = (*(*serverIt)).first;
+						int fid = *roomIt;
+						m_mediaRoomMap[fid].erase(curServer);  //删除当前房间的这台服务器  注意erase可以使用key也可以使用迭代器
+						
+						if (clientSetPtr->size() != 0) {  //如果更新之后，当前房间不为0，那就直接插入新值即可
+							m_mediaRoomMap[fid].emplace(curServer, clientSetPtr);  //插入更新后的值，这样就完成了当前服务器在所有房间的负载排序
+							playingIt++;  //注意这两个it的加加的方式，如果删除就是下面的方式如果不删除，就加加
+						}
+						else { //当前房间的这台server正在空转，肯定是减少，已经减少到没有了，这个时候需要这里进行房间的清理了（不过还可以采取其他策略）
+							std::cout << "当前服务器正在空转，目前的策略是清除掉该条目" << std::endl;
+							playingIt = curServer->m_playingFid.erase(playingIt);		//从当前服务器删除正在播放的标记fid
+3、关于lb服务器返回流媒体地址的编译情况，基本没有什么问题，大部分是类型不匹配之类的基本错误，所以不值得记录
+
+4、调试的时候，发现第一个用户登录正常，（第一个用户切换了房间）第二个用户一登录，lb就段错误了，然后又测试，第一个房间就进入一个房间，第二个用户登录，进入房间正常，然后第二个用户切换房间，也出现了段错误
+更新后Map：
+当前服务器模块个数（m_serviceConditionMap的内存分配情况）：2
+        当前模块1服务器个数：2
+                ip:127.0.0.1    port:10011      在线人数:2      当前condition22666      所属模块:1
+                ip:127.0.0.1    port:10010      在线人数:0      当前condition65467      所属模块:1
+        当前模块2服务器个数：2
+                ip:127.0.0.1    port:11001      在线人数:2      当前condition4294917206 所属模块:2
+                ip:127.0.0.1    port:11000      在线人数:0      当前condition3182       所属模块:2
+当前服务器索引情况个数（m_serverMap的内存分配情况）：4
+        当前服务器索引1地址详情[127.0.0.1:11001:2]
+        当前服务器索引2地址详情[127.0.0.1:11000:2]
+        当前服务器索引3地址详情[127.0.0.1:10011:1]
+        当前服务器索引4地址详情[127.0.0.1:10010:1]
+当前服务器模块临时存储区个数（m_serviceConditionMapTemp的内存分配情况）：2
+        当前模块5服务器个数：0
+        当前模块6服务器个数：0
+当前房间个数（m_mediaRoomMap的内存分配情况）：2
+        当前房间2服务器个数：1
+                [127.0.0.1      11001]  在线人数:2      当前condition4294917206 所属模块:2      当前房间服务器服务的uid：2      当前服务器在哪些房间：1 2 
+        当前房间1服务器个数：1
+                [127.0.0.1      11001]  在线人数:2      当前condition4294917206 所属模块:2      当前房间服务器服务的uid：1      当前服务器在哪些房间：1 2 
+===========
+threadID:139768458737408DEBUG:src/MsgRouter.cpp->call->line:34=[调用业务回调函数成功]
+threadID:139768458737408DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+threadID:139768458737408DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：10的读事件响应完成]
+threadID:139768458737408DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+threadID:139768467130112DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+threadID:139768467130112DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+threadID:139768467130112DEBUG:src/Udp.cpp->processRead->line:40=[正在读fd：6发来的消息并解析]
+threadID:139768467130112DEBUG:src/Buffer.cpp->readSocketToBuffer->line:357=[当前Buf的情况为：，当前读指针：0，当前写指针：0]
+threadID:139768467130112DEBUG:src/Buffer.cpp->readSocketToBuffer->line:359=[readSocketToBuffer2加锁]
+threadID:139768467130112DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+threadID:139768467130112DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：65536,需要扩容的大小：65527]
+threadID:139768467130112DEBUG:src/Buffer.cpp->resizeBuffer->line:95=[resizeBuffer解锁]
+threadID:139768467130112DEBUG:src/Buffer.cpp->readSocketToBuffer->line:366=[读到socket的数据大小为：14,当前Buf的情况为：，当前读指针：0，当前写指针：14]
+threadID:139768467130112DEBUG:src/Buffer.cpp->readSocketToBuffer->line:387=[readSocketToBuffer2解锁]
+threadID:139768467130112DEBUG:src/Udp.cpp->processRead->line:44=[正在解析数据]
+threadID:139768467130112DEBUG:src/Buffer.cpp->readFromBuffer->line:164=[readFromBuffer正在执行，size：4, getReadSize:14]
+threadID:139768467130112DEBUG:src/Buffer.cpp->readFromBuffer->line:172=[readFromBuffer1加锁]
+threadID:139768467130112DEBUG:src/Buffer.cpp->readFromBuffer->line:187=[readFromBuffer1解锁]
+threadID:139768467130112DEBUG:src/Buffer.cpp->readFromBuffer->line:164=[readFromBuffer正在执行，size：4, getReadSize:10]
+threadID:139768467130112DEBUG:src/Buffer.cpp->readFromBuffer->line:172=[readFromBuffer1加锁]
+threadID:139768467130112DEBUG:src/Buffer.cpp->readFromBuffer->line:187=[readFromBuffer1解锁]
+threadID:139768467130112DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:1, this->m_msglen:6]
+threadID:139768467130112DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：8，读缓冲区的写指针为：14]
+threadID:139768467130112DEBUG:src/Buffer.cpp->readFromBuffer->line:233=[readFromBuffer3加锁]
+threadID:139768467130112DEBUG:src/Buffer.cpp->readFromBuffer->line:240=[readFromBuffer3解锁]
+threadID:139768467130112DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为  ,大小为：6]
+threadID:139768467130112DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：14，读缓冲区的写指针为：14]
+threadID:139768467130112DEBUG:src/Message.cpp->analyze->line:49=[当前数据解析成功,msgid：1，msglen：6，m_data   ]
+threadID:139768467130112DEBUG:src/Message.cpp->analyze->line:50=[Response,读缓冲区的读指针为：14，读缓冲区的写指针为：14]
+threadID:139768467130112DEBUG:src/MsgRouter.cpp->call->line:61=[当前业务序号：1]
+threadID:139768467130112DEBUG:src/MsgRouter.cpp->call->line:69=[Udp的地址：21bdf80]
+threadID:139768467130112DEBUG:src/MsgRouter.cpp->call->line:70=[userData的地址：0]
+threadID:139768467130112DEBUG:src/LbAgent.cpp->requestHandle->line:72=[requestHandle开始执行]
+threadID:139768467130112DEBUG:src/LbAgent.cpp->DealingRequest->line:163=[requestType:2]
+threadID:139768467130112DEBUG:src/LbAgent.cpp->enterMediaRoom->line:179=[正在为2获取fid为1的房间]
+正在执行ServerAddr拷贝构造函数
+threadID:139768467130112DEBUG:./include/LbAgent.h->updateServer->line:294=[当前更新的set的serverModid：2]
+threadID:139768467130112DEBUG:./include/LbAgent.h->updateServer->line:298=[当前要找的server对应的condition值：-50090]
+threadID:139768467130112DEBUG:./include/LbAgent.h->updateServer->line:309=[即将执行updateServer中refreshCondition]
+暂时性condition65536m_clientNums * m_weight[m_clientNums]1
+当前服务器正在空转，目前的策略是清除掉该条目
+段错误(吐核)
+可以发现后面几行日志有很大问题，当前要找的server对应的condition值：-50090]，这个肯定是不对的，一个用户登录正常切换都是没问题的。。。
+===========
+更新后Map：
+当前服务器模块个数（m_serviceConditionMap的内存分配情况）：2
+        当前模块1服务器个数：2
+                ip:127.0.0.1    port:10011      在线人数:1      当前condition12174      所属模块:1
+                ip:127.0.0.1    port:10010      在线人数:0      当前condition62532      所属模块:1
+        当前模块2服务器个数：2
+                ip:127.0.0.1    port:11001      在线人数:1      当前condition101502     所属模块:2
+                ip:127.0.0.1    port:11000      在线人数:0      当前condition13647      所属模块:2
+当前服务器索引情况个数（m_serverMap的内存分配情况）：4
+        当前服务器索引1地址详情[127.0.0.1:11001:2]
+        当前服务器索引2地址详情[127.0.0.1:11000:2]
+        当前服务器索引3地址详情[127.0.0.1:10011:1]
+        当前服务器索引4地址详情[127.0.0.1:10010:1]
+当前服务器模块临时存储区个数（m_serviceConditionMapTemp的内存分配情况）：2
+        当前模块5服务器个数：0
+        当前模块6服务器个数：0
+当前房间个数（m_mediaRoomMap的内存分配情况）：1
+        当前房间2服务器个数：1
+                [127.0.0.1;11001]       在线人数:1      condition101502 模块:2  当前房间服务器服务的uid：1      当前服务器在哪些房间：2 
+===========
+。。。。。
+threadID:139966405601024DEBUG:src/LbAgent.cpp->DealingRequest->line:163=[requestType:2]
+threadID:139966405601024DEBUG:src/LbAgent.cpp->enterMediaRoom->line:179=[正在为1获取fid为1的房间]
+正在执行ServerAddr拷贝构造函数
+threadID:139966405601024DEBUG:src/LbAgent.cpp->enterMediaRoom->line:195=[oldServerCondition:[127.0.0.1:11001]]
+threadID:139966405601024DEBUG:./include/LbAgent.h->updateServer->line:294=[当前更新的set的serverModid：2]
+threadID:139966405601024DEBUG:./include/LbAgent.h->updateServer->line:298=[当前要找的server对应的condition值：101502]
+threadID:139966405601024DEBUG:./include/LbAgent.h->updateServer->line:309=[即将执行updateServer中refreshCondition]
+暂时性condition0m_clientNums * m_weight[m_clientNums]0
+当前服务器正在空转，目前的策略是从该房间清除掉空转的服务器
+1
+2
+3
+4
+threadID:139966405601024DEBUG:./include/LbAgent.h->updateServer->line:294=[当前更新的set的serverModid：2]
+threadID:139966405601024DEBUG:./include/LbAgent.h->updateServer->line:298=[当前要找的server对应的condition值：35966]
+threadID:139966405601024DEBUG:./include/LbAgent.h->updateServer->line:309=[即将执行updateServer中refreshCondition]
+暂时性condition65536m_clientNums * m_weight[m_clientNums]1
+。。。。。
+threadID:139966397208320DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：2]
+threadID:139966397208320DEBUG:src/MsgRouter.cpp->call->line:32=[userData的地址：0]
+threadID:139966397208320DEBUG:src/LbAgent.cpp->requestHandle->line:72=[requestHandle开始执行]
+===========
+当前收到：
+modid:1
+ip:127.0.0.1    port:10010
+ip:127.0.0.1    port:10011
+===========
+更新前Map：
+当前服务器模块个数（m_serviceConditionMap的内存分配情况）：2
+        当前模块1服务器个数：2
+                ip:127.0.0.1    port:10011      在线人数:1      当前condition12174      所属模块:1
+                ip:127.0.0.1    port:10010      在线人数:0      当前condition62532      所属模块:1
+        当前模块2服务器个数：2
+                ip:127.0.0.1    port:11001      在线人数:1      当前condition101502     所属模块:2
+                ip:127.0.0.1    port:11000      在线人数:0      当前condition13647      所属模块:2
+当前服务器索引情况个数（m_serverMap的内存分配情况）：4
+        当前服务器索引1地址详情[127.0.0.1:11001:2]
+        当前服务器索引2地址详情[127.0.0.1:11000:2]
+        当前服务器索引3地址详情[127.0.0.1:10011:1]
+        当前服务器索引4地址详情[127.0.0.1:10010:1]
+当前服务器模块临时存储区个数（m_serviceConditionMapTemp的内存分配情况）：2
+        当前模块5服务器个数：0
+        当前模块6服务器个数：0
+当前房间个数（m_mediaRoomMap的内存分配情况）：1
+        当前房间1服务器个数：1
+                [127.0.0.1;11001]       在线人数:1      condition101502 模块:2  当前房间服务器服务的uid：1      当前服务器在哪些房间：1 
+===========
+responseData->host_size():2
+无参构造ServerAddr
+serverAddr:127.0.0.1    10010   所属模块1
+相同server，不创建对象插入
+无参构造ServerAddr
+serverAddr:127.0.0.1    10011   所属模块1
+相同server，不创建对象插入
+===========
+更新后Map：
+当前服务器模块个数（m_serviceConditionMap的内存分配情况）：2
+        当前模块1服务器个数：2
+                ip:127.0.0.1    port:10011      在线人数:1      当前condition12174      所属模块:1
+                ip:127.0.0.1    port:10010      在线人数:0      当前condition62532      所属模块:1
+        当前模块2服务器个数：2
+                ip:127.0.0.1    port:11001      在线人数:1      当前condition101502     所属模块:2
+                ip:127.0.0.1    port:11000      在线人数:0      当前condition13647      所属模块:2
+当前服务器索引情况个数（m_serverMap的内存分配情况）：4
+        当前服务器索引1地址详情[127.0.0.1:11001:2]
+        当前服务器索引2地址详情[127.0.0.1:11000:2]
+        当前服务器索引3地址详情[127.0.0.1:10011:1]
+        当前服务器索引4地址详情[127.0.0.1:10010:1]
+当前服务器模块临时存储区个数（m_serviceConditionMapTemp的内存分配情况）：2
+        当前模块5服务器个数：0
+        当前模块6服务器个数：0
+当前房间个数（m_mediaRoomMap的内存分配情况）：1
+        当前房间1服务器个数：1
+                [127.0.0.1;11001]       在线人数:1      condition101502 模块:2  当前房间服务器服务的uid：1      当前服务器在哪些房间：1 
+
+
+可以看到，如果是同一个用户，那么condition101502 也是正常的，但是切换用户，切换几次之内必段错误
+可以断定有两种段错误，不过大概是同一种原因，下面是第二种段错误的现象：
+threadID:140191078639360DEBUG:src/Message.cpp->analyze->line:50=[Response,读缓冲区的读指针为：14，读缓冲区的写指针为：14]
+threadID:140191078639360DEBUG:src/MsgRouter.cpp->call->line:61=[当前业务序号：1]
+threadID:140191078639360DEBUG:src/MsgRouter.cpp->call->line:69=[Udp的地址：1813f80]
+threadID:140191078639360DEBUG:src/MsgRouter.cpp->call->line:70=[userData的地址：0]
+threadID:140191078639360DEBUG:src/LbAgent.cpp->requestHandle->line:72=[requestHandle开始执行]
+threadID:140191078639360DEBUG:src/LbAgent.cpp->DealingRequest->line:163=[requestType:2]
+threadID:140191078639360DEBUG:src/LbAgent.cpp->enterMediaRoom->line:179=[正在为2获取fid为1的房间]
+threadID:140191078639360DEBUG:src/LbAgent.cpp->enterMediaRoom->line:185=[11]
+threadID:140191078639360DEBUG:src/LbAgent.cpp->enterMediaRoom->line:209=[55]
+[tony@heihei bin]$ 
+可以看到
+Debug("11");
+	if (fromFid != 0) {
+		//清理原来服务器的三个信息
+		//更新流媒体server的人数（modid2） 需要放在这个if里面，因为万一客户端没看电影呢
+		auto targetServerIt = user_ServerMap.find(uid);
+		Debug("12");
+		if (targetServerIt == user_ServerMap.end()) {
+			return; //如果找不到，那就是有问题的，说明根本没登录上
+		}
+		Debug("22");
+		//先取出当前用户的udp服务器地址
+		ServerAddr& mediaServer = (*targetServerIt).second.m_mediaServer;  //注意前面的*,那只是个迭代器，需要得到元素本身才可以使用second
+		Debug("33");
+		ServerCondition* oldServerCondition = serverMap.getServer(&mediaServer);
+		Debug("44");
+		Debug("oldServerCondition:[%s:%d], condition:%d", oldServerCondition->m_addr.m_ip.data(), oldServerCondition->m_addr.m_port, oldServerCondition->getCondition());
+		if (oldServerCondition != nullptr) {  //这里为啥加if，在stop那个地方已经说明了
+			oldServerCondition->m_clientNums -= 1; //注意这里不能先update，如果先更新，后面就找不到m_mediaRoomMap的地址了，只要不update，就可以找到
+			//需要从观看名单中删除掉当前的uid
+			std::unordered_set<int>* clientSet = serverMap.getMediaServerClient(fromFid, mediaServer);  //clientSet和oldServerCondition其实是一个键值对，所以最后更新的是oldServerCondition
+			clientSet->erase(uid);
+			serverMap.updateServer(oldServerCondition);  //不需要提供uid和fid
+		}
+	}
+	Debug("55");
+	//然后分配服务器
+	//如果是uid，fid这种方式获取server（或者说是如果想要得到当前房间的一个服务器地址），那肯定是为了得到当前房间的一个服务器地址，所以这个时候，直接在内部就可以更新了，就是添加人员之类的
+	//不过感觉serverMap对应的类再提供两个成员函数，一个是添加人员，一个是删除人员，这样就比较灵活了，其实内部不内部添加都一样
+	ServerCondition* targetServerCondition = serverMap.getServer(uid, toFid);
+可以看到初次获取的时候也是会出错的，但仅限于多用户登录的时候会出现这个问题，继续打印日志细化问题点
+
+，果然都是一个问题点：
+threadID:139937960277760DEBUG:./include/LbAgent.h->updateServer->line:309=[即将执行updateServer中refreshCondition]
+暂时性condition65536m_clientNums * m_weight[m_clientNums]1
+threadID:139937960277760DEBUG:src/LbAgent.cpp->enterMediaRoom->line:200=[oldServerCondition:[127.0.0.1:11001], condition:-4443]
+threadID:139937960277760DEBUG:./include/LbAgent.h->updateServer->line:294=[当前更新的set的serverModid：2]
+threadID:139937960277760DEBUG:./include/LbAgent.h->updateServer->line:298=[当前要找的server对应的condition值：-4443]
+threadID:139937960277760DEBUG:./include/LbAgent.h->updateServer->line:309=[即将执行updateServer中refreshCondition]
+暂时性condition65536m_clientNums * m_weight[m_clientNums]1
+当前服务器正在空转，目前的策略是从该房间清除掉空转的服务器
+1
+2
+3
+4
+5
+threadID:139937960277760DEBUG:src/LbAgent.cpp->enterMediaRoom->line:209=[55]
+在增加了轨迹点之后，发现上面两个问题点都是在55附近出错
+也就是这一句
+ServerCondition* targetServerCondition = serverMap.getServer(uid, toFid);出问题了，继续打印日志轨迹
+发现
+threadID:139871405336320DEBUG:src/LbAgent.cpp->enterMediaRoom->line:185=[11]
+threadID:139871405336320DEBUG:src/LbAgent.cpp->enterMediaRoom->line:209=[55]
+threadID:139871405336320DEBUG:./include/LbAgent.h->getServer->line:429=[getServer1]
+threadID:139871405336320DEBUG:./include/LbAgent.h->getServer->line:432=[getServer2]
+threadID:139871405336320DEBUG:./include/LbAgent.h->getServer->line:436=[getServer3]
+threadID:139871405336320DEBUG:./include/LbAgent.h->getServer->line:440=[getServer4]
+段错误(吐核)
+执行到if就出错了
+for (auto it = roomServers[fid].begin(); it != roomServers[fid].end(); it++) {
+				targetServerCondition = it->first;
+				Debug("getServer4");
+				if (!targetServerCondition->isFullLoad()) {
+打印日志发现threadID:140306752280320DEBUG:./include/LbAgent.h->getServer->line:441=[targetServerCondition所指向的地址：1]
+段错误(吐核)
+地址为1，这显然不对。。。
+发现问题了。。。
+std::map<ServerCondition*, std::unordered_set<int>*, ServiceConditionCmp>* roomServers = getMediaServerMap(fid);
+		Debug("getServer2");
+		//如果有当前房间，即roomServers[fid]
+		if (roomServers != nullptr) {  //说明当前房间存在，尝试从当前房间获取，（注意不要上来就判断为nullptr，这样会导致后面的逻辑出现重复getServer(2)的情况）
+			//获取当前房间最好的服务器返回给客户端
+			Debug("getServer3");
+			ServerCondition* targetServerCondition = nullptr;
+			for (auto it = roomServers[fid].begin(); it != roomServers[fid].end(); it++) {
+可以看到roomServers 是std::map<ServerCondition*, std::unordered_set<int>*, ServiceConditionCmp>这种结构，但是我在遍历的时候，auto it = roomServers[fid].begin(); it != roomServers[fid].end(); it++很明显是把roomServers当成了m_mediaRoomMap，不过为啥roomServers[fid]没报错呢，可能是因为std::map<ServerCondition*, std::unordered_set<int>*, ServiceConditionCmp>的key是指针，可以隐式转换为int，所以使用fid的时候，不会报错，会把他当成地址。。。。。。。。，并且targetServerCondition = it->first;使用的时候也刚好是地址，也就直接转换过去了。。。。。改过来吧
+改成
+	ServerCondition* targetServerCondition = nullptr;
+			for (auto it = roomServers->begin(); it != roomServers->end(); it++) {  //一定要注意这是roomServers，见流媒体服务器的主要bug4
+				targetServerCondition = it->first;
+				Debug("getServer4");
+				Debug("targetServerCondition所指向的地址：%x", targetServerCondition);
+正常了
+
+5、当设计好media服务器的主体，并且基本实现了ffmpeg解封装之后的逻辑之后打算先编译一下，但是编译时出现了诡异的错误
+，现象表现为
+g++ -g -O2 -Wall -std=c++11 -o ./bin/mediaServer ../tools/protobuf/lbService/lbService.pb.cc ../tools/protobuf/mysqlService/mysqlService.pb.cc ../tools/protobuf/common/user.pb.cc  ../tools/protobuf/lbService/lbService.pb.o  ../tools/protobuf/mysqlService/mysqlService.pb.o  ../tools/protobuf/common/user.pb.o ./include ./ffmpeg    ../tools/rtsp/rtp/include ../tools/rtsp/rtsp/include -L../reactor/lib -lreactor -L/usr/lib64/mysql -lmysqlclient -lpthread -lm -lrt -ldl   -lprotobuf -lavformat -lavcodec   -lpthread
+../tools/protobuf/lbService/lbService.pb.o：在函数‘lbService::StopServiceRequestDefaultTypeInternal::~StopServiceRequestDefaultTypeInternal()’中：
+/home/tony/myprojects/MovieHub/lbAgent/../tools/protobuf/lbService/lbService.pb.cc:294: descriptor_table_lbService_2eproto_getter() 的多重定义
+/tmp/ccya4Y0X.o:/home/tony/myprojects/MovieHub/mediaServer/../tools/protobuf/lbService/lbService.pb.cc:294：第一次在此定义
+../tools/protobuf/lbService/lbService.pb.o：在函数‘lbService::StopServiceRequestDefaultTypeInternal::~StopServiceRequestDefaultTypeInternal()’中：
+/home/tony/myprojects/MovieHub/lbAgent/../tools/protobuf/lbService/lbService.pb.cc:294: descriptor_table_lbService_2eproto 的多重定义
+/tmp/ccya4Y0X.o:/home/tony/myprojects/MovieHub/mediaServer/../tools/protobuf/lbService/lbService.pb.cc:294：第一次在此定义
+../tools/protobuf/lbService/lbService.pb.o：在函数‘lbService::HostInfo::GetClassData() const’中：
+/home/tony/myprojects/MovieHub/lbAgent/../tools/protobuf/lbService/lbService.pb.cc:489: lbService::HostInfo::GetClassData() const 的多重定义
+/tmp/ccya4Y0X.o:/home/tony/myprojects/MovieHub/mediaServer/../tools/protobuf/lbService/lbService.pb.cc:489：第一次在此定义
+../tools/protobuf/lbService/lbService.pb.o：在函数‘lbService::RepostMsgRequest::GetMetadata() const’中：
+/home/tony/myprojects/MovieHub/lbAgent/../tools/protobuf/lbService/lbService.pb.cc:1778: lbService::HostInfo::_class_data_ 的多重定义
+/tmp/ccya4Y0X.o:/home/tony/myprojects/MovieHub/mediaServer/../tools/protobuf/lbService/lbService.pb.cc:1778：第一次在此定义
+很多函数重定义，然后看了执行的命令，发现-objs是有问题的，然后源文件是这样写的
+#需要的源文件
+CPPPATH=./src $(AVDEMUXER) $(RTP_PROTO)/src $(RTSP_PROTO)/src
+SRC=$(wildcard $(addsuffix /*.cpp, $(CPPPATH)))
+CPPOBJS=$(patsubst %.cpp, %.o, $(SRC))
+
+
+#因为protobuf是cc文件所以需要单独添加
+CCPATH=$(LBSERVICE) $(MYSQLSERVICE) $(COMMONSERVICE)
+SRC=$(wildcard $(addsuffix /*.cc, $(CCPATH)))
+CCOBJS=$(patsubst %.cc, %.o, $(SRC))
+
+OBJS= $(CPPOBJS) $(CCOBJS)
+
+$(TARGET):$(OBJS)
+    mkdir -p ./bin
+    echo $(CPPOBJS)
+    echo $(CPPPATH)
+    $(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(INC) $(LIBS)
+然后我输出CPPOBJS
+echo ../tools/protobuf/lbService/lbService.pb.cc ../tools/protobuf/mysqlService/mysqlService.pb.cc ../tools/protobuf/common/user.pb.cc，这显然是有问题的，感觉是src共同使用导致的，分别使用不同的变量果然正常了，具体原因是啥呢，好像需要使用覆盖赋值:=，具体原因见这个https://blog.csdn.net/b876144622/article/details/80372161#%20%E2%80%9C=%E2%80%9D
+
+6、一直找不到ffmepg的头文件
+g++ -g -O2 -Wall -std=c++11 -c -o src/server.o src/server.cpp -I./include -I./ffmpeg/include -I../tools/rtsp/rtp/include -I../tools/rtsp/rtsp/include -I../reactor/include -L../reactor/lib -lreactor -L/usr/lib64/mysql -lmysqlclient -lpthread -lm -lrt -ldl   -lprotobuf -lavformat -lavcodec   -lpthread#需要指定头文件，动态库不确定要不要指定
+In file included from ./ffmpeg/include/Avdemuxer.h:3:0,
+                 from ./include/Room.h:2,
+                 from ./include/MediaServer.h:6,
+                 from src/server.cpp:1:
+./ffmpeg/include/ffmpeg.h:5:49: 致命错误：libavformat/avformat.h：没有那个文件或目录
+  #include "libavformat/avformat.h" //libavformat
+然后我搜索，也没找到对应的库在哪，然后查编译过程的文件，发现我config成功了，后面就忘记进行了。。。。。。，我真无语，安装之后，可以正常使用了，但是发现ffmppeg命令行会报错
+[root@heihei bin]# ls
+ffmpeg  ffprobe  protoc  x264
+[root@heihei bin]# ffmpeg -version
+ffmpeg: error while loading shared libraries: libavdevice.so.60: cannot open shared object file: No such file or directory
+可以看到环境变量中包含了ffmpeg的路径
+declare -x PATH="/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:/home/tony/.local/bin:/home/tony/bin"
+ffmpeg的命令行是在 cd /usr/local/bin/中的，很奇怪，程序可以找到动态库，但是命令行找不到动态库
+，然后搞清楚了可执行命令的环境变量（path），编译时期的环境变量（LIBPATH）和动态库的环境变量（ LD_LIBRARY_PATH）（https://blog.csdn.net/weixin_48859611/article/details/113986310），这个是怎么修改的，然后我记得这个文章的第三种方法我好像操作过，然后我看了里面的内容，发现包含所需要的libavdevice.so.60路径呀，（/usr/local/lib下面就有），然后我执行了一下ldconfig  ，然后就正常了。。。。
+ffmpeg  x264  安装残留说明
+[root@heihei ~]# find / -name "*libavdevice.so.60*"
+/root/ffmpeg/ffmpeg-6.0/libavdevice/libavdevice.so.60
+/usr/local/lib/libavdevice.so.60
+/usr/local/lib/libavdevice.so.60.1.100
+find: ‘/run/user/1000/gvfs’: 权限不够
+[root@heihei ~]# ldconfig 
+[root@heihei ~]# ffmpeg
+ffmpeg version 6.0 Copyright (c) 2000-2023 the FFmpeg developers
+  built with gcc 4.8.5 (GCC) 20150623 (Red Hat 4.8.5-44)
+  configuration: --enable-gpl --enable-libx264 --enable-shared --disable-x86asm
+  libavutil      58.  2.100 / 58.  2.100
+  libavcodec     60.  3.100 / 60.  3.100
+  libavformat    60.  3.100 / 60.  3.100
+  libavdevice    60.  1.100 / 60.  1.100
+  libavfilter     9.  3.100 /  9.  3.100
+  libswscale      7.  1.100 /  7.  1.100
+  libswresample   4. 10.100 /  4. 10.100
+  libpostproc    57.  1.100 / 57.  1.100
+Hyper fast Audio and Video encoder
+usage: ffmpeg [options] [[infile options] -i infile]... {[outfile options] outfile}...
+那就不折腾其他两种方法了，能理解原理，并且能用就行
+甚至还可以设置头文件搜索路径和链接路径https://blog.csdn.net/DargonWain/article/details/108738641，这里不介绍了
+
+还有一点需要注意ffmpeg的头文件需要#include <libavformat/avformat.h>
+还有就是在使用c的头文件时必须使用extern c，否则会链接错误https://blog.csdn.net/ustcxxy/article/details/32088383
+7、编译时头文件忘记包含protobuf的mediaService了，然后就报错找不到里面的pb.h，这个比较简单，就不记录细节了
+8、又碰到一个很诡异的问题，
+AVBSFContext* avBSFContext;			//过滤器的上下文
+	const AVBitStreamFilter* avBitStreamFilter;	//确定流过滤器
+这两个结构体竟然不存在。。。。。。
+但是网上都是这样的呀。。。。。。然后我查了一下 cd /usr/local/include/下的头文件，发现果然搜不到，然后我怀疑是不是我用的最新版本，然后更新的没有了，，发现没有这种问题，然后我搜了一下其他的头文件，发现bsf.h里面有。。。。。然后我搜索了bsf.h发现http://ffmpeg.org/doxygen/trunk/bsf_8h_source.html这个官网竟然时前一天更新的。。。。。然后我就把头文件换成bsf.h吧
+
+9、又碰到log和protobuf的变体版本bug了
+                                        ^
+In file included from ../reactor/include/Buffer.h:2:0,
+                 from ../reactor/include/Udp.h:2,
+                 from ./include/MediaServer.h:5,
+                 from src/server.cpp:1:
+/usr/local/include/google/protobuf/io/coded_stream.h: 在全局域：
+../reactor/include/Log.h:31:29: 错误：expected unqualified-id before ‘do’
+ #define Error(fmt, args...) do{LOG("ERROR",fmt, ##args);exit(0);}while(0)
+                             ^
+In file included from ../tools/protobuf/mediaService/mediaService.pb.h:23:0,
+                 from ../tools/rtsp/rtp/include/rtp.h:2,
+                 from ./include/Room.h:3,
+                 from ./include/MediaServer.h:6,
+                 from src/server.cpp:1:
+/usr/local/include/google/protobuf/io/coded_stream.h:844:10: 错误：expected ‘;’ at end of member declaration
+   uint8_t* Error() {
+          ^
+In file included from ../reactor/include/Buffer.h:2:0,
+                 from ../reactor/include/Udp.h:2,
+                 from ./include/MediaServer.h:5,
+                 from src/server.cpp:1:
+../reactor/include/Log.h:31:29: 错误：expected unqualified-id before ‘do’
+ #define Error(fmt, args...) do{LOG("ERROR",fmt, ##args);exit(0);}while(0)
+                             ^
+In file included from /usr/local/include/google/protobuf/io/coded_stream.h:1750:0,
+                 from ../tools/protobuf/mediaService/mediaService.pb.h:23,
+                 from ../tools/rtsp/rtp/include/rtp.h:2,
+                 from ./include/Room.h:3,
+                 from ./include/MediaServer.h:6,
+                 from src/server.cpp:1:
+/usr/local/include/google/protobuf/port_undef.inc:138:27: 错误：expected ‘}’ before end of line
+ #pragma GCC diagnostic pop
+                           ^
+In file included from ../tools/protobuf/mediaService/mediaService.pb.h:23:0,
+                 from ../tools/rtsp/rtp/include/rtp.h:2,
+                 from ./include/Room.h:3,
+                 from ./include/MediaServer.h:6,
+                 from src/server.cpp:1:
+/usr/local/include/google/protobuf/io/coded_stream.h: 在构造函数‘google::protobuf::io::EpsCopyOutputStream::EpsCopyOutputStream(void*, int, google::protobuf::io::ZeroCopyOutputStream*, bool, uint8_t**)’中:
+/usr/local/include/google/protobuf/io/coded_stream.h:680:38: 错误：‘SetInitialBuffer’在此作用域中尚未声明
+     *pp = SetInitialBuffer(data, size);
+                                      ^
+发现是Room.h里面包含了mediaService.pb.h，然后这个room.h上面是Udp.h，然后就报错。。把room.h放到最上面就没事了
+10、一个低级的bug，如果不加iostream，即使加了std:那么也会报cout未定义
+11、又碰到了嵌套类的初始化问题，已经在room那里记录了，在lb那里也记录了，但其实还不理解为啥那样初始化
+12、顺便在记录一个const成员变量的初始化问题，可以使用初始化列表，但是不能在类中初始化 Avdemuxer中const AVBitStreamFilter* avBitStreamFilter;	//确定流过滤器，的初始化
+13、关于muxer不能赋值，导致demuxer只能是成员指针的问题（附注：‘Avdemuxer::Avdemuxer(Avdemuxer&&)’ is implicitly deleted because the default definition would be ill-formed:）
+       ^
+./include/Room.h:14:7: 错误：使用了被删除的函数‘Avdemuxer::Avdemuxer(Avdemuxer&&)’
+In file included from ./include/Room.h:2:0,
+                 from ./include/MediaServer.h:2,
+                 from src/server.cpp:1:
+./ffmpeg/include/Avdemuxer.h:12:7: 附注：‘Avdemuxer::Avdemuxer(Avdemuxer&&)’ is implicitly deleted because the default definition would be ill-formed:
+ class Avdemuxer {
+       ^
+./ffmpeg/include/Avdemuxer.h:12:7: 错误：使用了被删除的函数‘std::mutex::mutex(const std::mutex&)’
+In file included from ./ffmpeg/include/Avdemuxer.h:5:0,
+                 from ./include/Room.h:2,
+                 from ./include/MediaServer.h:2,
+                 from src/server.cpp:1:
+/usr/include/c++/4.8.2/mutex:128:5: 错误：在此声明
+     mutex(const mutex&) = delete;
+     ^
+In file included from ./include/Room.h:2:0,
+                 from ./include/MediaServer.h:2,
+                 from src/server.cpp:1:
+./ffmpeg/include/Avdemuxer.h:12:7: 错误：使用了被删除的函数‘std::mutex::mutex(const std::mutex&)’
+ class Avdemuxer {
+       ^
+In file included from ./ffmpeg/include/Avdemuxer.h:5:0,
+                 from ./include/Room.h:2,
+                 from ./include/MediaServer.h:2,
+                 from src/server.cpp:1:
+/usr/include/c++/4.8.2/mutex:128:5: 错误：在此声明
+     mutex(const mutex&) = delete;
+改成了指针之后就可以了
+14、在讲mediaServer改成组合也就是13那种嵌套类的时候，由于还是含有mutex，导致一直使用被删除的函数，所以mediaServer中的含有互斥锁的类必须使用指针，下面是日志
+src/MediaServer.cpp:22:59:   required from here
+/usr/include/c++/4.8.2/tuple:142:42: 错误：使用了被删除的函数‘UdpServer::UdpServer(const UdpServer&)’
+  : _M_head_impl(std::forward<_UHead>(__h)) { }
+                                          ^
+In file included from ./include/MediaServer.h:6:0,
+                 from src/MediaServer.cpp:2:
+../reactor/include/Udp.h:96:7: 附注：‘UdpServer::UdpServer(const UdpServer&)’ is implicitly deleted because the default definition would be ill-formed:
+ class UdpServer:public Udp {
+       ^
+../reactor/include/Udp.h:96:7: 错误：使用了被删除的函数‘Udp::Udp(const Udp&)’
+../reactor/include/Udp.h:28:7: 附注：‘Udp::Udp(const Udp&)’ is implicitly deleted because the default definition would be ill-formed:
+ class Udp {
+       ^
+../reactor/include/Udp.h:28:7: 错误：使用了被删除的函数‘std::mutex::mutex(const std::mutex&)’
+In file included from /usr/local/include/google/protobuf/stubs/once.h:34:0,
+                 from /usr/local/include/google/protobuf/message_lite.h:50,
+                 from /usr/local/include/google/protobuf/generated_enum_util.h:36,
+                 from /usr/local/include/google/protobuf/map.h:55,
+                 from /usr/local/include/google/protobuf/generated_message_table_driven.h:34,
+                 from ../tools/protobuf/mysqlService/mysqlService.pb.h:26,
+                 from src/MediaServer.cpp:1:
+/usr/include/c++/4.8.2/mutex:128:5: 错误：在此声明
+     mutex(const mutex&) = delete;
+     ^
+In file included from ./include/MediaServer.h:6:0,
+                 from src/MediaServer.cpp:2:
+../reactor/include/Udp.h:28:7: 错误：使用了被删除的函数‘std::condition_variable::condition_variable(const std::condition_variable&)’
+ class Udp {
+       ^
+In file included from ../reactor/include/Udp.h:11:0,
+                 from ./include/MediaServer.h:6,
+                 from src/MediaServer.cpp:2:
+/usr/include/c++/4.8.2/condition_variable:76:5: 错误：在此声明
+     condition_variable(const condition_variable&) = delete;
+15、流媒体服务器不应该增加一个udp客户端单独和lb服务器，这样的话，lb服务器还要记住流媒体服务器的lbClient的地址，显然太笨重了，直接传给udpServer吧
+16、mysql服务器给流媒体服务器回复的路径是""，但是我在里面打印是正确的呀。。。。
+然后发现
+void MysqlAgent::analyzeQueryResult(MysqlConn* conn, mysqlService::GetMovieInfoRequest* requestData,
+	int& responseType, mysqlService::GetMovieInfoResponse* responseData) {
+	//组织sql语句
+	char sql[256] = { 0 };
+	sprintf(sql, sqls[3][0].data(), requestData->fid());
+	Debug("获取电影信息的sql：%s",sql);
+	conn->query(sql);
+	responseData->set_toid(requestData->fromid());
+	mysqlService::GetMovieInfoResponse movieInfo;
+	while (conn->next()) {
+		movieInfo.set_fid(requestData->fid());
+		movieInfo.set_path(conn->value(2));
+		Debug("获取到的路径：%s", conn->value(2).data());
+		movieInfo.set_summary(conn->value(3));
+	}
+	responseType = (int)mysqlService::ID_GetMovieInfoResponse;
+}
+应该是responseData赋值，而不是mysqlService::GetMovieInfoResponse movieInfo;，这里进行
+17、碰到了一个奇怪的问题：路径正确，但是解析的时候出现了问题，怀疑是和线程有关系
+threadID:140099272648448DEBUG:src/MsgRouter.cpp->call->line:32=[userData的地址：0]
+创建房间第二步，房间id为：1的路径为/home/tony/myprojects/MovieHub/resource
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/home/tony/myprojects/MovieHub/resource/喜剧之王.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf58.29.100
+    description     : Packed by Bilibili XCoder v2.0.2
+  Duration: 00:27:23.56, start: 0.000000, bitrate: 1528 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9], 1200 kb/s, 30 fps, 30 tbr, 16k tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 317 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+terminate called without an active exception
+已放弃(吐核)
+原来是是主线程没有等待房间线程
+https://blog.csdn.net/yuerenzirao/article/details/121504419，那就用join等待一下
+	std::thread startRoom(&MediaRoom::run, mediaRoom);
+	startRoom.join();
+加上一句这个，完美解决，解封装完成，下一步就是分包发送到对端
+
+18、这是在写流媒体服务器中解封装线程同步时，进行测试，发现了一个之前一直没发现的问题，就是多线程同步时，莫名奇妙退出的问题，然后在测试的时候突然意识到这个问题的所在了，就是return，或者其他终止函数，可以见流媒体服务器的test的condition_variableTest.cpp，可以看到消费者如果加了return，那么最终每个线程只会执行一次，即使你加了while，可以自己去试试看，如果去掉return，那么就没有线程退出问题了，如果想要使用return，那么就必须在该函数外面执行死循环，比如getFrame的外面可以while1
+在测试文件里进行了三种模式的测试，一种是一次生产一个，然后就提醒，还有是一次生产满，然后提醒，还有就是每次消费就提醒，还有就是消费到最低值再提醒，发现如果生产满的话队列空的概率更小，其实最终目的就是为了保证rtp去取数据的时候都有数据，而不至于等待，但是如果采取，一次生产满，然后小于某个值的时候提醒，这个会导致生产满，然后消费完，然后再生产，再消费完，很神奇，好像notify没用一样。
+然后又对其有了新的理解，为了不让rtp线程在队列为空的时候等待，然后是每次生产一个就通知消费，这样空队列的话会立马唤醒，而不是之前的生产完再通知，如果没有线程在空队列上等待，那么直接notify完全不起作用，同样的，没有必要消费一个就通知生产，等到低于最小值，再通知即可，测试发现几乎不会进入rtp几乎不会进入空队列，不过这个和avdemuxer的最大值和最小值也有关系，如果设置的过小，rtp取的时候肯定也会有进入到空队列等待，和最小值最大值没关系，是因为之前设计的不对，之前设计的take在休眠的时候是带锁休眠的，显然不行，这会导致一个线程重复消费，也就是吃独食，如果不带锁消费，就可以保证其他消费线程正常消费，第二个就是put线程在notify的问题，这个在测试文件里讨论了，一定要看测试文件，非常棒的测试。通过测试文件，可以不关心缓冲区的最大值和最小值问题了，也能顺利实现我想要的效果吗，简直完美，但是生产者线程会不断的切换，导致不必要的开销，其实可以由一个线程去生产满，不过在测试文件里也讨论了，最终可以考虑加上一小段sleep，1微秒左右就够了
+
+=====下面就是写rtp和medairoom编译的时候（上面的已经写完avdemuxer了）的问题了，很多类型不匹配，单词错误等低级错误
+
+19、protobuf如果要修改嵌套message，那么应该使用mutable_xxx()，不过最重要的是看pb.h
+20、
+	std::thread sendVideoFrame(&RTP::sendFrame, this, VIDEO, 40);
+	//启动一个线程，定时的发送一帧音频数据
+	std::thread sendAudioFrame(&RTP::sendFrame, this, AUDIO, 23);
+上面这两行代码报了一个奇怪的错误
+/usr/include/c++/4.8.2/functional: In instantiation of ‘struct std::_Bind_simple<std::_Mem_fn<int (RTP::*)(FrameType, int, sockaddr_in&)>(MediaRoom*, FrameType, int)>’:
+/usr/include/c++/4.8.2/thread:137:47:   required from ‘std::thread::thread(_Callable&&, _Args&& ...) [with _Callable = int (RTP::*)(FrameType, int, sockaddr_in&); _Args = {MediaRoom* const, FrameType, int}]’
+src/MediaRoom.cpp:48:61:   required from here
+/usr/include/c++/4.8.2/functional:1697:61: 错误：no type named ‘type’ in ‘class std::result_of<std::_Mem_fn<int (RTP::*)(FrameType, int, sockaddr_in&)>(MediaRoom*, FrameType, int)>’
+       typedef typename result_of<_Callable(_Args...)>::type result_type;
+                                                             ^
+/usr/include/c++/4.8.2/functional:1727:9: 错误：no type named ‘type’ in ‘class std::result_of<std::_Mem_fn<int (RTP::*)(FrameType, int, sockaddr_in&)>(MediaRoom*, FrameType, int)>’
+         _M_invoke(_Index_tuple<_Indices...>)
+然后发现了一个很无语的错误
+(&RTP::sendFrame,这个函数是MediaRoom的，真无语，改过来就正确了
+std::thread sendVideoFrame(&MediaRoom::sendFrame, this, VIDEO, 40);
+	//启动一个线程，定时的发送一帧音频数据
+	std::thread sendAudioFrame(&MediaRoom::sendFrame, this, AUDIO, 23);
+}
+
+21、
+ 错误：从类型‘uint8_t* {aka unsigned char*}’到类型‘const char*’的转换无效 [-fpermissive]
+    int startKind = edgeFlag(frame->data + i, 0); //从第i+0开始比较，返回当前帧的类型
+                                         ^
+不能将char* 转为uint8_t*
+将接口改为RTP::edgeFlag(const uint8_t* buf, int i) 即可
+
+22、
+ ^
+../tools/rtsp/rtp/src/rtp.cpp: 在成员函数‘void RTP::avPacket2Rtp(AVPacket*)’中:
+../tools/rtsp/rtp/src/rtp.cpp:178:28: 错误：invalid use of member function (did you forget the ‘()’ ?)
+     videoRtpPacket->header = videoCatch.rtpHeader; //填充rtpHeader
+
+之前是这样 
+videoRtpPacket->header= videoCatch.rtpHeader;	//填充rtpHeader		
+现在是这样
+videoRtpPacket->header()= videoCatch.rtpHeader;	//等号运算符，可以看pb.h,但还是不明白，header()返回的不是
+但还是有一点不明白，header返回的是const呀，果然报错了，之前的为啥不报错呢，之前也碰到过copyFrom的问题，那个地方用的也是XXX() = ...
+不对，那个地方用的也是mutable__xxx哈哈哈，那就正常了，那就改成
+	videoRtpPacket->mutable_header()->CopyFrom(videoCatch.rtpHeader);	//填充rtpHeader		
+和之前的baseServer那里处理的逻辑一样
+
+23、关于protobuf和ffmpeg中uint8_t的问题：uint8_t到string的转换问题，我目前采取的方式并不高效，如果直接往string里写，会导致出现很多问题。还有成员更新
+	uint32_t updatedSeq = audioCatch.rtpHeader.base();
+			updatedSeq++;
+			audioCatch.rtpHeader.set_base(updatedSeq);
+			//当前帧存储完，才更新时间戳
+			audioCatch.rtpHeader.set_timestamp(audioCatch.rtpHeader.timestamp() + 90000 / 25);
+这一块操作起来稍微麻烦一些，这些后期再找一些优雅的方式
+
+24、定义的是正向迭代器，但是我在赋值的时候是反向迭代器，出现了下面的问题
+
+../tools/rtsp/rtp/src/rtp.cpp:433:23: 错误：no match for ‘operator=’ (operand types are ‘std::list<mediaService::RtpPacket*>::iterator {aka std::_List_iterator<mediaService::RtpPacket*>}’ and ‘std::list<mediaService::RtpPacket*>::reverse_iterator {aka std::reverse_iterator<std::_List_iterator<mediaService::RtpPacket*> >}’)
+源代码是audioFrame->realAddr = frameCatch.rtpPacket.rbegin();
+改成audioFrame->realAddr = std::next(frameCatch.rtpPacket.end(), -1);
+
+25、又碰到了模板函数未定义的引用问题
+../tools/rtsp/rtp/src/rtp.o：在函数‘RTP::sendRtpPacket(mediaService::RtpPacket*, sockaddr_in&)’中：
+/home/tony/myprojects/MovieHub/mediaServer/../tools/rtsp/rtp/src/rtp.cpp:27：对‘void MediaServer::udpSendMsg<mediaService::RtpPacket>(int, mediaService::RtpPacket*, sockaddr_in*)’未定义的引用
+这是源码：
+	m_mediaServer->udpSendMsg(mediaService::ID_TransRtpPacket, rtpPacket, &toAddr);
+但是m_mediaServer-这个类中，没有一句调用，也就意味着没有实现，只有调用，那就把m_mediaServer的模板函数放到头文件里吧
+26、遇到了一个疑为重名的问题，就是room的user如果使用User作为结构体，那么在实例化的时候会出错，目前的解决方案是该名称，但是改了名称还是会出错
+错误：对成员‘uid’的请求出现在‘userTemp’中，而后者具有非类类型‘OnlineUser()’
+  userTemp.uid = 1;
+然后感觉哪都没改，就正常了。。。。。。。尝试还原，也没还原出来，真神奇，不管了，开始测试
+
+27、出现了段错误
+threadID:139811647473408DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为：喜剧之王.mp4"'/home/tony/myprojects/MovieHub/resource*!一部很有喜剧特色的电影,大小为：96]
+threadID:139811647473408DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：104，读缓冲区的写指针为：104]
+threadID:139811647473408DEBUG:src/Message.cpp->analyze->line:29=[当前数据解析成功,msgid：32，msglen：96，m_data：喜剧之王.mp4"'/home/tony/myprojects/MovieHub/resource*!一部很有喜剧特色的电影 ]
+threadID:139811647473408DEBUG:src/Message.cpp->analyze->line:30=[Response,读缓冲区的读指针为：104，读缓冲区的写指针为：104]
+threadID:139811647473408DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：32]
+threadID:139811647473408DEBUG:src/MsgRouter.cpp->call->line:32=[userData的地址：0]
+创建房间第二步，房间id为：1的路径为/home/tony/myprojects/MovieHub/resource
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/home/tony/myprojects/MovieHub/resource/喜剧之王.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf58.29.100
+    description     : Packed by Bilibili XCoder v2.0.2
+  Duration: 00:27:23.56, start: 0.000000, bitrate: 1528 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9], 1200 kb/s, 30 fps, 30 tbr, 16k tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 317 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+terminate called without an active exception
+已放弃(吐核)
+应该还是房间没用创建完，先打印一下路径，确定大概在哪个位置，大概分析应该是room的构造函数里初始化完解封装器后
+妈的，主线程创建完之后，忘记join了。。。。。。。之前就碰到过。。。。包括其他线程，一定要记得join或者分离
+
+28、没有上述问题了，但是还是有段错误
+创建房间第二步，房间id为：1的路径为/home/tony/myprojects/MovieHub/resource
+Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '/home/tony/myprojects/MovieHub/resource/喜剧之王.mp4':
+  Metadata:
+    major_brand     : isom
+    minor_version   : 512
+    compatible_brands: isomiso2avc1mp41
+    encoder         : Lavf58.29.100
+    description     : Packed by Bilibili XCoder v2.0.2
+  Duration: 00:27:23.56, start: 0.000000, bitrate: 1528 kb/s
+  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9], 1200 kb/s, 30 fps, 30 tbr, 16k tbn (default)
+    Metadata:
+      handler_name    : VideoHandler
+      vendor_id       : [0][0][0][0]
+  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 317 kb/s (default)
+    Metadata:
+      handler_name    : SoundHandler
+      vendor_id       : [0][0][0][0]
+threadID:140675624355584DEBUG:src/MediaRoom.cpp->MediaRoom->line:11=[MediaRoom1]
+threadID:140675624355584DEBUG:src/MediaRoom.cpp->MediaRoom->line:17=[MediaRoom2]
+threadID:140675624355584DEBUG:src/MediaRoom.cpp->MediaRoom->line:29=[MediaRoom3]
+threadID:140675540162304DEBUG:src/MediaRoom.cpp->run->line:61=[启动MediaRoom的run函数]
+threadID:140675540162304DEBUG:src/MediaRoom.cpp->run->line:64=[启动rtpPacketManager的run函数]
+段错误(吐核)
+启动rtpPacketManager的run函数]这个有问题，高度怀疑rtpHeaderInit这个函数有问题
+应该是&videoCatch.rtpHeader这个地址还没初始化吧，不过好像不太对https://wenku.baidu.com/view/a105498ed2f34693daef5ef7ba0d4a7303766c41.html?_wkts_=1695384644037&bdQuery=c%2B%2B%E5%B5%8C%E5%A5%97%E7%B1%BB%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E5%88%9D%E5%A7%8B%E5%8C%96
+又细化了日志，发现RTP::run() 
+发现竟然能打印出来
+threadID:139621099276032DEBUG:../tools/rtsp/rtp/src/rtp.cpp->run->line:510=[RTP:run1]
+threadID:139621099276032DEBUG:../tools/rtsp/rtp/src/rtp.cpp->run->line:513=[RTP:run2]
+threadID:139621099276032DEBUG:../tools/rtsp/rtp/src/rtp.cpp->run->line:516=[RTP:run3]
+段错误(吐核)
+
+	//开启一个线程定时的获取一个音频帧数据
+	Debug("RTP:run1");
+	std::thread getVideoPacket(&RTP::getPacket, this, VIDEO, 40);
+	//开启一个线程，定时的获取一个视频帧数据
+	Debug("RTP:run2");
+	std::thread getAudioPacket(&RTP::getPacket, this, AUDIO, 23);
+	//可以考虑开启一个删除包的线程，当满的时候就删除
+	Debug("RTP:run3");
+	getVideoPacket.join();
+	getAudioPacket.join();
+
+真神奇，不过需要注意的是这个不应该使用join，因为执行run函数的这个线程还需要执行其他线程
+那就感觉是
+getPacket这个函数的问题了，再打印一下这个函数
+threadID:140119839627008DEBUG:src/MediaRoom.cpp->run->line:64=[启动rtpPacketManager的run函数]
+threadID:140119839627008DEBUG:../tools/rtsp/rtp/src/rtp.cpp->run->line:512=[RTP:run1]
+threadID:140119839627008DEBUG:../tools/rtsp/rtp/src/rtp.cpp->run->line:515=[RTP:run2]
+threadID:140119831234304DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getPacket->line:88=[getFrameInfo1]
+threadID:140119839627008DEBUG:../tools/rtsp/rtp/src/rtp.cpp->run->line:518=[RTP:run3]
+可以确定是getOnePacket这个函数有问题了，在这个函数继续打印日志
+threadID:140221219862272DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getPacket->line:88=[getFrameInfo1]
+threadID:140221219862272DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:98=[getOnePacket0]
+threadID:140221219862272DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:105=[getOnePacket1]
+threadID:140221435057920DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getPacket->line:88=[getFrameInfo1]
+threadID:140221435057920DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:98=[getOnePacket0]
+threadID:140221435057920DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:105=[getOnePacket1]
+发现是getOnePacket1这个位置有问题
+
+//将当前帧封装成rtp包
+	avPacket2Rtp(packet);
+	Debug("getOnePacket2");
+	//注意释放packet，这样就可以保证avdemuxer不存在内存泄漏
+	av_packet_unref(packet);
+}
+
+void RTP::avPacket2Rtp(AVPacket* frame) {
+	//注意打包完成之后，别忘记释放掉avpacket
+	//sps和pps都打包在idr帧里面了
+
+	//获取帧类型，是视频帧还是音频帧
+	FrameList* frameList = nullptr;
+	FrameType frameType;
+	if (frame->stream_index == m_videoStreamId) {
+		frameList = &videoCatch;
+		frameType = VIDEO;
+	}
+	else if (frame->stream_index == m_audioStreamId) {
+		frameList = &audioCatch;
+		frameType = AUDIO;
+	}
+	else {
+		std::cout << "avPacket2Rtp帧类型错误" << std::endl;
+		return;
+	}
+	Debug("avPacket2Rtp1");
+通过这两个函数，发现RTP::avPacket2Rtp这个函数的前面就有问题：Debug("avPacket2Rtp1");。。。。。
+threadID:139883646822144DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getPacket->line:88=[getFrameInfo1]
+threadID:139883646822144DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:98=[getOnePacket0]
+threadID:threadID:139883646822144DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:105=[getOnePacket1]
+139883638429440threadID:139883646822144DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:120=[avPacket2Rtp-2]
+DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getPacket->line:88=[getFrameInfo1]
+threadID:139883638429440DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:98=[getOnePacket0]
+threadID:139883638429440DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:105=[getOnePacket1]
+threadID:139883638429440DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:120=[avPacket2Rtp-2]
+
+发现
+Debug("avPacket2Rtp-2");
+	if (frame->stream_index == m_videoStreamId) {
+		frameList = &videoCatch;
+		frameType = VIDEO;
+		Debug("avPacket2Rtp-1");
+	}
+	else if (frame->stream_index == m_audioStreamId) {
+		frameList = &audioCatch;
+		frameType = AUDIO;
+		Debug("avPacket2Rtp0");
+	}
+大概是if (frame->stream_index == m_videoStreamId) {这句有问题。。。。。为什么获取会失败呢，难道是nullptr
+发现果然是nullptr
+发现可能是解封装器返回的这个。。。。	if (isAvailable == false && frameCatch.empty()) return nullptr; //如果不可用，说明已经解码完了，并且当前缓存也消耗完了，直接返回nullptr
+打印日志发现确实isAvailable == false?:1,  frameCatch.empty():1]
+//启动房间
+void MediaRoom::run() {
+	isRunning = true;
+	//启动解封装器
+	Debug("启动MediaRoom的run函数");
+	demuxer->run();
+	//启动rtp
+	Debug("启动rtpPacketManager的run函数");
+	rtpPacketManager->run();
+	//启动一个线程，发送一帧视频数据
+	Debug("启动sendVideoFrame");
+	std::thread sendVideoFrame(&MediaRoom::sendFrame, this, VIDEO, 40);
+	//启动一个线程，定时的发送一帧音频数据
+	Debug("启动sendVideoFrame");
+	std::thread sendAudioFrame(&MediaRoom::sendFrame, this, AUDIO, 23);
+	sendVideoFrame.join();
+	sendAudioFrame.join();
+}
+这里的解封装器件和rtpPacketManager应该需要启动顺序
+不对呀，isAvailable 应该为true呀，这样就不会返回nullptr，所以本质上不需要启动顺序，而应该查询哪里设置为false了
+发现构造函数里为0，但是get就为1了，神奇
+threadID:140391625799424DEBUG:ffmpeg/src/Avdemuxer.cpp->Avdemuxer->line:26=[1Avdemuxer:isAvailable == false?:0]
+threadID:140391625799424DEBUG:ffmpeg/src/Avdemuxer.cpp->Avdemuxer->line:41=[2Avdemuxer:isAvailable == false?:0]
+threadID:140391625799424DEBUG:ffmpeg/src/Avdemuxer.cpp->Avdemuxer->line:47=[3Avdemuxer:isAvailable == false?:0]
+threadID:140391625799424DEBUG:ffmpeg/src/Avdemuxer.cpp->Avdemuxer->line:66=[4Avdemuxer:isAvailable == false?:0]
+threadID:140391625799424DEBUG:src/MediaRoom.cpp->MediaRoom->line:11=[MediaRoom1]
+threadID:140391625799424DEBUG:../tools/rtsp/rtp/src/rtp.cpp->RTP->line:8=[RTP1]
+threadID:140391625799424DEBUG:../tools/rtsp/rtp/src/rtp.cpp->rtpHeaderInit->line:550=[rtpHeaderInit1]
+threadID:140391625799424DEBUG:../tools/rtsp/rtp/src/rtp.cpp->rtpHeaderInit->line:553=[rtpHeaderInit2]
+threadID:140391625799424DEBUG:../tools/rtsp/rtp/src/rtp.cpp->RTP->line:10=[RTP2]
+threadID:140391625799424DEBUG:../tools/rtsp/rtp/src/rtp.cpp->rtpHeaderInit->line:550=[rtpHeaderInit1]
+threadID:140391625799424DEBUG:../tools/rtsp/rtp/src/rtp.cpp->rtpHeaderInit->line:553=[rtpHeaderInit2]
+threadID:140391625799424DEBUG:../tools/rtsp/rtp/src/rtp.cpp->RTP->line:12=[RTP3]
+threadID:140391625799424DEBUG:src/MediaRoom.cpp->MediaRoom->line:17=[MediaRoom2]
+threadID:140391625799424DEBUG:src/MediaRoom.cpp->MediaRoom->line:29=[MediaRoom3]
+threadID:140391538894592DEBUG:src/MediaRoom.cpp->run->line:61=[启动MediaRoom的run函数]
+threadID:140391538894592DEBUG:src/MediaRoom.cpp->run->line:64=[启动rtpPacketManager的run函数]
+threadID:140391538894592DEBUG:../tools/rtsp/rtp/src/rtp.cpp->run->line:531=[RTP:run1]
+threadID:140391538894592DEBUG:../tools/rtsp/rtp/src/rtp.cpp->run->line:534=[RTP:run2]
+threadID:140391538894592DEBUG:../tools/rtsp/rtp/src/rtp.cpp->run->line:537=[RTP:run3]
+threadID:140391522109184DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getPacket->line:88=[getFrameInfo1]
+threadID:140391530501888DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getPacket->line:88=[getFrameInfo1]
+threadID:140391522109184DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:98=[getOnePacket0]
+threadID:140391522109184DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:104=[getOnePacket0.2]
+threadID:140391522109184DEBUG:ffmpeg/src/Avdemuxer.cpp->getFrame->line:247=[getFrame1]
+threadID:140391522109184DEBUG:ffmpeg/src/Avdemuxer.cpp->getFrame->line:249=[isAvailable == false?:1,  frameCatch.empty():1]
+下面是Avdemuxer的构造函数，真神奇
+//使过滤器进入准备状态。在所有参数被设置完毕后调用
+	ret = av_bsf_init(avBSFContext);
+	if (ret < 0) {
+		std::cout << "Prepare the filter failed" << std::endl;
+		isAvailable = false;
+	}
+	Debug("4Avdemuxer:isAvailable == false?:%d", isAvailable == false);
+}
+这就神奇了，同一个对象，中间也没执行其他函数，值就变了。。。。。
+threadID:140155833808640DEBUG:ffmpeg/src/Avdemuxer.cpp->Avdemuxer->line:66=[4Avdemuxer:isAvailable == false?:0，当前对象地址：8c000b90]
+threadID:140155833808640DEBUG:src/MediaRoom.cpp->MediaRoom->line:11=[MediaRoom1]
+threadID:140155833808640DEBUG:../tools/rtsp/rtp/src/rtp.cpp->RTP->line:8=[RTP1]
+threadID:140155833808640DEBUG:../tools/rtsp/rtp/src/rtp.cpp->rtpHeaderInit->line:550=[rtpHeaderInit1]
+threadID:140155833808640DEBUG:../tools/rtsp/rtp/src/rtp.cpp->rtpHeaderInit->line:553=[rtpHeaderInit2]
+threadID:140155833808640DEBUG:../tools/rtsp/rtp/src/rtp.cpp->RTP->line:10=[RTP2]
+threadID:140155833808640DEBUG:../tools/rtsp/rtp/src/rtp.cpp->rtpHeaderInit->line:550=[rtpHeaderInit1]
+threadID:140155833808640DEBUG:../tools/rtsp/rtp/src/rtp.cpp->rtpHeaderInit->line:553=[rtpHeaderInit2]
+threadID:140155833808640DEBUG:../tools/rtsp/rtp/src/rtp.cpp->RTP->line:12=[RTP3]
+threadID:140155833808640DEBUG:src/MediaRoom.cpp->MediaRoom->line:17=[MediaRoom2]
+threadID:140155833808640DEBUG:src/MediaRoom.cpp->MediaRoom->line:29=[MediaRoom3]
+threadID:140155816982272DEBUG:src/MediaRoom.cpp->run->line:61=[启动MediaRoom的run函数]
+threadID:140155816982272DEBUG:src/MediaRoom.cpp->run->line:64=[启动rtpPacketManager的run函数]
+threadID:140155816982272DEBUG:../tools/rtsp/rtp/src/rtp.cpp->run->line:531=[RTP:run1]
+threadID:140155816982272DEBUG:../tools/rtsp/rtp/src/rtp.cpp->run->line:534=[RTP:run2]
+threadID:140155808589568DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getPacket->line:88=[getFrameInfo1]
+threadID:140155808589568DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:98=[getOnePacket0]
+threadID:140155808589568DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:100=[getOnePacket0.1]
+threadID:140155808589568DEBUG:ffmpeg/src/Avdemuxer.cpp->getFrame->line:247=[getFrame1]
+threadID:140155808589568DEBUG:ffmpeg/src/Avdemuxer.cpp->getFrame->line:249=[isAvailable == false?:1,  frameCatch.empty():1, 当前对象地址：8c000b90]
+是其他类改了？改为私有看看
+这真tm神奇，看看哪里动了这个，打印日志看看，解封装函数的这里很可疑
+if (av_read_frame(avFormatContext, packet) == 0) {
+			std::cout << "isAvailable设为false" << std::endl;
+			isAvailable = false;
+			return;
+		}
+果然。。。。。。，不知道啥时候改的，如果返回0，说明读取成功，。。。。。。。。
+改成
+if (av_read_frame(avFormatContext, packet) < 0) {
+			std::cout << "isAvailable设为false" << std::endl;
+			isAvailable = false;
+			return;
+		}
+29、发现没有问题了，但是好像死锁了
+当前对象地址：64000b90]
+threadID:140399952705280DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:107=[getOnePacket1]
+threadID:140399952705280DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:122=[avPacket2Rtp-2]
+threadID:140399944312576DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getPacket->line:88=[getFrameInfo1]
+threadID:140399944312576DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:98=[getOnePacket0]
+threadID:140399944312576DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:104=[getOnePacket0.2]
+threadID:140399944312576DEBUG:ffmpeg/src/Avdemuxer.cpp->getFrame->line:249=[getFrame1]
+threadID:140399944312576DEBUG:ffmpeg/src/Avdemuxer.cpp->getFrame->line:251=[isAvailable == false?:0,  frameCatch.empty():1, 当前对象地址：64000b90]
+视频缓存队列为空，稍等一会
+threadID:140399952705280DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:130=[avPacket2Rtp-1]
+threadID:140399952705280DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:141=[avPacket2Rtp1]
+threadID:140399952705280DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:151=[avPacket2Rtp2]
+当前视频帧起始符号错误，已忽略
+threadID:140399952705280DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:110=[getOnePacket2]
+threadID:140399952705280DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getPacket->line:90=[getFrameInfo2]
+threadID:140399952705280DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getPacket->line:88=[getFrameInfo1]
+threadID:140399952705280DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:98=[getOnePacket0]
+threadID:140399952705280DEBUG:../tools/rtsp/rtp/src/rtp.cpp->getOnePacket->line:100=[getOnePacket0.1]
+threadID:140399952705280DEBUG:ffmpeg/src/Avdemuxer.cpp->getFrame->line:249=[getFrame1]
+threadID:140399952705280DEBUG:ffmpeg/src/Avdemuxer.cpp->getFrame->line:251=[isAvailable == false?:0,  frameCatch.empty():1, 当前对象地址：64000b90]
+视频缓存队列为空，稍等一会
+一直卡在这里
+而且发现：当前视频帧起始符号错误，已忽略
+这个应该是写的有问题
+int startKind = edgeFlag(frame->data + i, 0); //从第i+0开始比较，返回当前帧的类型
+			if (i != 0) {
+				std::cout << "当前视频帧起始符号错误，已忽略" << std::endl;
+				return; //如果当前帧起始符错误，则不处理
+			}
+不应该是i，而应该是startKind ，
+但是这个死锁的怎么解决，不是死锁，而是
+void run() {
+		//启动一个线程，解封装
+		//注意这里不需要定时，可以看测试程序
+		std::thread productAvPacket(&Avdemuxer::produceAvPacket, this);
+		productAvPacket.join();
+	}
+这里只会把(&Avdemuxer::produceAvPacket, 执行完就结束，而(&Avdemuxer::produceAvPacket, 没有用while1.。。。加上吧
+30、发现加上之后，出现下面这种问题
+hreadID:140672451892992DEBUG:../tools/rtsp/rtp/src/rtp.cpp->RTP->line:8=[RTP1]
+threadID:140672451892992DEBUG:../tools/rtsp/rtp/src/rtp.cpp->rtpHeaderInit->line:550=[rtpHeaderInit1]
+threadID:140672451892992DEBUG:../tools/rtsp/rtp/src/rtp.cpp->rtpHeaderInit->line:553=[rtpHeaderInit2]
+threadID:140672451892992DEBUG:../tools/rtsp/rtp/src/rtp.cpp->RTP->line:10=[RTP2]
+threadID:140672451892992DEBUG:../tools/rtsp/rtp/src/rtp.cpp->rtpHeaderInit->line:550=[rtpHeaderInit1]
+threadID:140672451892992DEBUG:../tools/rtsp/rtp/src/rtp.cpp->rtpHeaderInit->line:553=[rtpHeaderInit2]
+threadID:140672451892992DEBUG:../tools/rtsp/rtp/src/rtp.cpp->RTP->line:12=[RTP3]
+threadID:140672451892992DEBUG:src/MediaRoom.cpp->MediaRoom->line:17=[MediaRoom2]
+threadID:140672451892992DEBUG:src/MediaRoom.cpp->MediaRoom->line:29=[MediaRoom3]
+threadID:140672435066624DEBUG:src/MediaRoom.cpp->run->line:61=[启动MediaRoom的run函数]
+当前视频帧缓存个数：1
+当前视频帧缓存个数：2
+当前视频帧缓存个数：3
+当前视频帧缓存个数：4
+当前音频帧缓存个数：1
+当前音频帧缓存个数：2
+当前视频帧缓存个数：5
+当前音频帧缓存个数：3
+。。。
+当前音频帧缓存个数：1552
+当前视频帧缓存个数：997
+当前音频帧缓存个数：1553
+当前音频帧缓存个数：1554
+当前视频帧缓存个数：998
+当前音频帧缓存个数：1555
+当前视频帧缓存个数：999
+当前音频帧缓存个数：1556
+当前音频帧缓存个数：1557
+当前视频帧缓存个数：1000
+队列已满，请等待消费
+猜测是上面的发现的join导致的，应该改为detach，其他函数也应该这样，房间内所有创建的线程都应该detach，只有server那一个类创建的可以join
+可以正常跑了，等下打印一下内存结构
+
+31、打印的时候，出现了这种错误
+./tools/rtsp/rtp/include/rtp.h:139:172: 错误：expected unqualified-id before ‘->’ token
+   std::cout << "当前有几帧缓存：" << framelist->frameNum << "\t当前缓存的起始帧：" << framelist->startFrameIdx << "\t当前帧间间隔：" << framelist->->duration << std::endl;
+然后发现： framelist->->duration。。。。
+
+32、打印发现起始帧，等信息没有初始化，导致是随机数，然后改成如下：
+videoCatch.frameModid = VIDEO;
+	audioCatch.frameModid = AUDIO;
+	videoCatch.startFrameIdx = 0;
+	audioCatch.startFrameIdx = 0;
+	videoCatch.frameNum = 0;
+	audioCatch.frameNum = 0;
+然后出现了段错误
+
+视频缓存队列为空，稍等一会
+threadID:139688808781568DEBUG:src/MediaRoom.cpp->run->line:70=[启动sendVideoFrame]
+threadID:139688576808704DEBUG:ffmpeg/src/Avdemuxer.cpp->getFrame->line:248=[isAvailable == false?:0,  frameCatch.empty():1]
+视频缓存队列为空，稍等一会
+threadID:139688825607936DEBUG:src/MsgRouter.cpp->call->line:34=[调用业务回调函数成功]
+threadID:139688825607936DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+threadID:139688825607936DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：10的读事件响应完成]
+threadID:139688825607936DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+当前视频帧缓存个数：1
+
+帧列类型：视频 当前有几帧缓存：4        当前缓存的起始帧：1     当前帧间间隔：0
+当前FrameList中rtpHeader信息：  暂时忽略
+当前帧列信息：
+当前视频帧缓存个数：1
+当前视频帧缓存个数：2
+视频缓存队列为空，稍等一会
+段错误(吐核)
+[tony@heihei bin]$ 
+
+然后发现上面的各个帧的信息打印不出来，然后改了一下，发现还是打印不出来，而且还是段错误
+视频缓存队列为空，稍等一会
+threadID:140630801725184DEBUG:src/MediaRoom.cpp->run->line:67=[启动sendVideoFrame]
+当前视频帧缓存个数：1
+threadID:140630575539968DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:131=[avPacket2Rtp-1]
+threadID:140630575539968DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:142=[avPacket2Rtp1]
+threadID:140630575539968DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:152=[avPacket2Rtp2]
+threadID:threadID:140630575539968DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:185=[140630801725184avPacket2Rtp3]
+threadID:140630558754560DEBUG:ffmpeg/src/Avdemuxer.cpp->getFrame->line:248=[isAvailable == false?:0,  frameCatch.empty():1]
+视频缓存队列为空，稍等一会
+DEBUG:src/MediaRoom.cpp->run->line:70=[启动sendVideoFrame]
+threadID:140630575539968DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:221=[avPacket2Rtp4]
+threadID:140630575539968DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:185=[avPacket2Rtp3]
+threadID:140630575539968DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:221=[avPacket2Rtp4]
+threadID:140630575539968DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:185=[avPacket2Rtp3]
+threadID:140630575539968DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:221=[avPacket2Rtp4]
+threadID:140630575539968DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:185=[avPacket2Rtp3]
+threadID:140630575539968DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:221=[avPacket2Rtp4]
+帧列类型：视频 当前有几帧缓存：4        当前缓存的起始帧：1     当前帧间间隔：0
+当前FrameList中rtpHeader信息：  暂时忽略
+当前帧列信息：
+段错误(吐核)
+[tony@heihei bin]$ 
+改的部分
+; i < framelist->frames.size();改成了
+	for (int i = framelist->startFrameIdx; i < framelist->startFrameIdx + framelist->frames.size(); i++) {
+大概能推断是帧的list有问题
+但是打印list的个数，和上面显示的一样，这是为啥呢，难道是map返回的是不对的？
+
+threadID:140026967394048DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:185=[avPacket2Rtp3]
+threadID:140026967394048DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:221=[avPacket2Rtp4]
+threadID:140026967394048DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:185=[avPacket2Rtp3]
+threadID:140026967394048DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:221=[avPacket2Rtp4]
+帧列类型：视频 当前有几帧缓存：4(4)     当前缓存的起始帧：1     当前帧间间隔：0
+当前FrameList中rtpHeader信息：  暂时忽略
+当前帧列信息：
+printRtp1
+当前视频帧缓存个数：1
+视频缓存队列为空，稍等一会
+段错误(吐核)
+[tony@heihei bin]$ 
+源码：
+for (int i = framelist->startFrameIdx; i < framelist->startFrameIdx + framelist->frames.size(); i++) {
+			std::cout << "printRtp1" << std::endl;
+			std::cout << "\t" << i << "帧：" << "发送次数：" << framelist->frames[i]->sendTimes << "\t含有"
+				<< framelist->frames[i]->packetNums << "个rtp包\t整个视频的第" << framelist->frames[i]->frameIdx << "帧" << std::endl;
+			int j = 1;
+
+发现大概率是
+std::cout << "\t" << i << "帧：" << "发送次数：" << framelist->frames[i]->sendTimes << "\t含有"
+				<< framelist->frames[i]->packetNums << "个rtp包\t整个视频的第" << framelist->frames[i]->frameIdx << "帧" << std::endl;
+这一句访问失败，很有可能是framelist->frames[i]这一句返回的是nullptr
+测试一下，果然就没有段错误了，这为啥是nullptr呢
+用迭代器访问一下，看看到底什么情况（之前直接使用下班访问的。。。。）
+发现不管是视频帧还是音频帧
+当前帧列信息：
+        6帧：发送次数：0        含有1个rtp包    是整个视频的第6帧
+当前rtpPacket中rtpHeader信息：  暂时忽略
+当前包的第一个字节：A当前包的大小：6
+        5帧：发送次数：0        含有1个rtp包    是整个视频的第5帧
+当前rtpPacket中rtpHeader信息：  暂时忽略
+当前包的第一个字节：A当前包的大小：18
+        4帧：发送次数：0        含有1个rtp包    是整个视频的第4帧
+当前rtpPacket中rtpHeader信息：  暂时忽略
+当前包的第一个字节：e当前包的大小：3
+        3帧：发送次数：0        含有1个rtp包    是整个视频的第3帧
+当前rtpPacket中rtpHeader信息：  暂时忽略
+当前包的第一个字节：当前包的大小：90
+        2帧：发送次数：0        含有1个rtp包    是整个视频的第2帧
+当前rtpPacket中rtpHeader信息：  暂时忽略
+当前包的第一个字节：h当前包的大小：4
+        0帧：发送次数：0        含有1个rtp包    是整个视频的第0帧
+没有第一帧。。。。
+发现我在更新的时候判断的是
+if (frameCatch->frames.size() == 0) {
+		if (frameCatch->startFrameIdx == -1) {  //初始化为-1
+			frameCatch->startFrameIdx = 1;
+		}
+然后初始化>startFrameIdx 的时候是0，，，，，改成-1吧，但是依然没有效果，主要是下面的问题：
+oid RTP::updateFrameList(FrameList* frameCatch, int frameIdx, mediaService::RtpPacket* rtpPacket, int packetNums) {
+	//上面这个注释是不对的，rtpPacket和startFrameIdx是没关系的，应该是frames
+	if (frameCatch->frames.size() == 0) {
+		if (frameCatch->startFrameIdx == -1) {  //初始化为-1
+			frameCatch->startFrameIdx = 1;
+		}
+		//如果size为0，但是startFrameIdx不为0，那么+1即可，因为这种情况代表所有的帧都发送完全了，startFrameIdx最终会指向队尾的，因为如果我删除的话，也会更新这个值
+		//这个时候又来了一个帧，那就+1即可，不过如果清除old帧的时候，不更新startFrameIdx，那肯定有问题的，逻辑就不对，而且不可能从后往前清理，而且必须是一帧一帧的清理，
+		//所以不用担心，但是操作的时候必须mutex
+		else {
+			frameCatch->startFrameIdx += 1;
+		}
+	}
+	//如果frameCatch.rtpPacket.size() == 0，不为0，那就不需要更新startFrameIdx
+	frameCatch->frameNum += 1;
+
+	frameCatch->rtpPacket.push_back(rtpPacket);	//注意这里压入的是指针
+
+	FrameInfo* audioFrame = new FrameInfo;
+	frameCatch->frames[frameIdx] = audioFrame;
+这里的[frameIdx] 是从外面传进来的，然后
+外面是int frameIdx = videoCatch.startFrameIdx + videoCatch.frameNum;
+这显然是不对的，可以不从外面传进来[frameIdx] ，而是内部推算，完全可以，发现可以从第一帧出现了，但是发现打印的好乱，在getOnePacket这个函数起始加个锁
+加个锁就很正常了。。。。。。。。关键是前面出现的其他问题（我在上面没记录，一直都有段错误（这个段错误是frames和rtpPacket的list打印的时候一直访问段错误，不关乎内容上的，内容上的是指rtpPacket的头和data，前面的研究一直关于frames的key），但不是前面问题研究的目标，所以没提），都正常了（正常是指frames的各个帧可以正常访问，帧序号在不删除的情况下正确，至于每个帧应该有几个rtp包，每个包的大小内容，都还没研究）。。
+
+33、下面就是关于内容方面的了
+threadID:140287850571520DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:222=[avPacket2Rtp4]
+帧列类型：视频 当前有几帧缓存：当前视频帧缓存个数：4(4) 当前缓存的起始帧：1     当前帧间间隔：10
+当前FrameList中rtpHeader信息：  暂时忽略
+当前帧列信息：
+        4帧：发送次数：0        含有1个rtp包    是整个视频的第4帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：e      大小：3
+        3帧：发送次数：0        含有1个rtp包    是整个视频的第3帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：      大小：90
+        2帧：发送次数：0        含有1个rtp包    是整个视频的第2帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：h      大小：4
+        1帧：发送次数：0        含有1个rtp包    是整个视频的第1帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：g      大小：2
+帧列类型：音频  当前有几帧缓存：0(0)    当前缓存的起始帧：-1    当前帧间间隔：100
+当前FrameList中rtpHeader信息：  暂时忽略
+这是读取了第一个avpacket，结果出来了4个rtp包，先打印一下日志吧，追踪一下怎么操作avpacket的，看了rtp码流，确实应该出现4个rtp包，也确实应该是4帧，分别是sps，pps，sei和idr，但是包的大小明显不对
+打印的时候，发现是要拷贝的大小是正确的呀，为啥只有2呢，然后看了码流
+67 64 00 32 AC CA 70 1E 00 89 F9 70 16 A0 20 20 28 00 00 03 00 08 00 00 03 01 E4 78发现第二个字节为00，那很有可能set_payload的时候截断了。。。。
+也就是videoRtpPacket->set_payload(std::string((char*)payload));		//这个并不够高效
+这句有问题
+改成这样？
+				videoRtpPacket->set_payload(std::string((char*)payload, frameSize));		//这个并不够高效
+
+果然大小正确了。。。。。哈哈哈哈哈神奇
+
+34、发现大于1包的时候，尾包丢失
+当前帧列信息：
+        17帧：发送次数：0       含有4个rtp包    是整个视频的第17帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：5c     大小：1400
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        2包的第一个字节：5c     大小：1400
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        3包的第一个字节：5c     大小：1400
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        4包的第一个字节：5c     大小：1400
+        16帧：发送次数：0       含有1个rtp包    是整个视频的第16帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：1      大小：75
+        15帧：发送次数：0       含有1个rtp包    是整个视频的第15帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：1      大小：64
+        14帧：发送次数：0       含有1个rtp包    是整个视频的第14帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：41     大小：67
+        13帧：发送次数：0       含有1个rtp包    是整个视频的第13帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：1      大小：89
+第17帧的信息如下：
+6166 00000141 p帧
+6166 - 3 /1400 = 为4.4帧，也就是5帧，但是当前只有4帧，肯定是和循环次数有关，先打印一下看看，发现循环银子packetNums确实为5，但是发现
+		//最后一帧
+					else if (packetNums == 0) {
+						//如果为最后一帧（lastPacketBytes不管为不为0，前面都判断好了），则将这一帧的第1位置1，低5位和NALU的Type的Type一致
+						payload[1] = 0x40 | naluType;//0x40（ser为010）为高三位，naluType为低5位
+						//如果不是第一帧，直接push即可
+						videoCatch.rtpPacket.push_back(videoRtpPacket);
+					}
+最后一帧判断条件是packetNums == 0，肯定不可能呀，packNums为0的时候就进不来呀，不可能为0，改过来应该就好了，但是还是不行， 17帧：发送次数：0       含有4个rtp包    是整个视频的第17帧这里记录的rtp包大小就是4
+threadID:139651642664704DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:154=[frame的大小6172, startIdx：6]
+threadID:139651642664704DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:243=[packetNums：5, fullPacketNums：4]
+threadID:139651642664704DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:269=[avPacket2Rtp6]
+threadID:139651642664704DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:289=[avPacket2Rtp7]
+threadID:139651642664704DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:269=[avPacket2Rtp6]
+threadID:139651642664704DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:289=[avPacket2Rtp7]
+threadID:139651642664704DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:269=[avPacket2Rtp6]
+threadID:139651642664704DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:289=[avPacket2Rtp7]
+threadID:139651642664704DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:269=[avPacket2Rtp6]
+threadID:139651642664704DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:289=[avPacket2Rtp7]
+threadID:139651642664704DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:269=[avPacket2Rtp6]
+threadID:139651642664704DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:289=[avPacket2Rtp7]
+threadID:139651642664704DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:306=[avPacket2Rtp8]
+帧列类型：视频 当前有几帧缓存：17(17)   当前缓存的起始帧：1     当前帧间间隔：0
+当前FrameList中rtpHeader信息：  暂时忽略
+当前帧列信息：
+        17帧：发送次数：0       含有4个rtp包    是整个视频的第17帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：5c     大小：1400
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        2包的第一个字节：5c     大小：1400
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        3包的第一个字节：5c     大小：1400
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        4包的第一个字节：5c     大小：1400
+        16帧：发送次数：0       含有1个rtp包    是整个视频的第16帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：1      大小：75
+        15帧：发送次数：0       含有1个rtp包    是整个视频的第15帧
+
+发现
+	while (packetNums--) {
+					//准备工作，创建videoRtpPacket，并填充一些东西
+					mediaService::RtpPacket* videoRtpPacket = new mediaService::RtpPacket;
+					videoRtpPacket->mutable_header()->CopyFrom(videoCatch.rtpHeader);	//填充rtpHeader		
+					//准备工作，先求出当前包大小，以及初始化数组
+					//注意，注意，注意，curFrameStart对应的那个字节需要舍弃，
+					//确定最后一帧的rtp长度
+					int packetSize = 0;
+					if (packetNums == 0) {	//是最后一帧
+						packetSize = lastPacketBytes == 0 ? 1400 : lastPacketBytes;		//如果lastPacketBytes == 0说明最后一个包是1400字节，如果不为0，说明最后一个包是lastPacketBytes字节
+					}
+					else {
+						packetSize = 1400;
+					}
+					//不要使用std::string 会出很多问题，使用uint8_t再转换
+					//std::string payload;
+					uint8_t payload[2 + packetSize];	//注意这里的packetSize是不包含nalutype那个字节的，所以不用-1
+					//先初始化FU_identifier + FU_Header
+
+					//填充FU_identifier，高三位与NALU第一个字节的高三位相同，低5位为28，h264规范中规定的
+					payload[0] = fNRI | 0x1C;  //0x1c为低5位的28
+
+					//填充FU_Header
+					//S：标记该分片打包的第一个RTP包(0) E：比较该分片打包的最后一个RTP包(1) R: 保留位，我看网上都是0  Type：NALU的Type(3-7)
+					//如果为第一帧，则将这一帧的第0位置1，低5位和NALU的Type的Type一致
+					Debug("avPacket2Rtp6");
+					if (j == curFrameStart + 1) {	//说明是第一帧	//注意这里为啥是 curFrameStart + 1
+						payload[1] = 0x80 | naluType;//0x80为高三位（ser为100），naluType为低5位
+						//FrameList
+						updateFrameList(&videoCatch, videoRtpPacket, packetNums);
+while的时候packetNums--先减去了1，然后传给了packetNums);，while之前是5，但是传递的时候变为了4，导致丢了一个不完整的包，所以可以当前while循环体执行完之后再--；然后循环体关于packetNums的再更新一下逻辑，看看
+大小对应上了，但是第一次的时候崩了，可能不稳定
+
+35、就是音频的帧一直不填充，这是为啥，只有视频帧
+呃呃发现问题出现在这里
+	while (1) {
+		getOnePacket(frameType);
+	}
+	std::this_thread::sleep_for(std::chrono::milliseconds(sleep_ms));
+在video的获取帧的线程中while(1)外面休眠。。。。有啥用。。。应该放到while里面休眠。
+放进去之后发现段错误
+threadID:139992311527168DEBUG:ffmpeg/src/Avdemuxer.cpp->getFrame->line:248=[isAvailable == false?:0,  frameCatch.empty():0]
+threadID:139992311527168DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:138=[avPacket2Rtp0]
+threadID:139992311527168DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:144=[avPacket2Rtp1]
+threadID:139992311527168DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:340=[avPacket2Rtp9]
+当前音频帧缓存个数：50
+threadID:139992311527168DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:404=[avPacket2Rtp10]
+threadID:139992311527168DEBUG:../tools/rtsp/rtp/src/rtp.cpp->avPacket2Rtp->line:413=[avPacket2Rt11]
+帧列类型：视频 当前有几帧缓存：4(4)     当前缓存的起始帧：1     当前帧间间隔：0
+当前FrameList中rtpHeader信息：  暂时忽略
+当前帧列信息：
+        4帧：发送次数：0        含有1个rtp包    是整个视频的第4帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：65     大小：1180
+        3帧：发送次数：0        含有1个rtp包    是整个视频的第3帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：6      大小：92
+        2帧：发送次数：0        含有1个rtp包    是整个视频的第2帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：68     大小：4
+        1帧：发送次数：1        含有1个rtp包    是整个视频的第1帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：67     大小：31
+帧列类型：音频  当前有几帧缓存：2(2)    当前缓存的起始帧：1     当前帧间间隔：100
+当前FrameList中rtpHeader信息：  暂时忽略
+当前帧列信息：
+段错误(吐核)
+这个信息感觉是音频的frameLIst打印的时候有问题
+再打印一下日志：
+*************************
+帧列类型：音频  当前有几帧缓存：2(2)    当前缓存的起始帧：1     当前帧间间隔：100
+当前FrameList中rtpHeader信息：  暂时忽略
+当前帧列信息：
+音频帧测试1
+当前视频帧缓存个数：27
+段错误(吐核)
+[tony@heihei bin]$ 
+可以发现
+	for (auto it = framelist->frames.begin(); it != framelist->frames.end(); it++) {
+			std::cout << "音频帧测试1" << std::endl;
+			std::cout << "\t" << it->first << "帧：" << "发送次数：" << it->second->sendTimes << "\t含有"
+				<< it->second->packetNums << "个rtp包\t是整个视频的第" << it->second->frameIdx << "帧" << std::endl;
+			std::cout << "音频帧测试2" << std::endl;
+这里有问题大概，先把这句注释掉，再打印看看
+果然，可以打印std::cout << "音频帧测试2" << std::endl;，但是为啥不能访问呢，视频很正常的呀。。。。难道压入的地址为无效地址？？？
+
+tmd，自己看看咋写的，操作的对象本来是(frameCatch-，后面咋就变成videoCatch.startFrameIdx 然后audioFrame-，我真无语
+
+	//注意这个frameIdx必须等到startFrameIdx更新完，在更新，因为刚开始外界得到的startFrameIdx可能为-1
+	//当前帧是整个音视频的第几帧怎么获取，这个帧肯定是放在最后的，所以当前帧是startFrameIdx + frameNum（注意此时frameNum还没更新，因为startFrameIdx本身是从1开始的）
+	int frameIdx = videoCatch.startFrameIdx + videoCatch.frameNum;
+	FrameInfo* audioFrame = new FrameInfo;
+	frameCatch->frames[frameIdx] = audioFrame;
+但是这个好像不至于访问出错吧
+因为核心的两句是
+ FrameInfo* audioFrame = new FrameInfo;                                                                 
+    frameCatch->frames[frameIdx] = audioFrame;   
+只要这个audioFrame 的地址记住了，访问是没问题的呀，或者被其他人析构了？？？？
+
+发现第一个帧的时候是可以正常打印的
+帧列类型：音频  当前有几帧缓存：1(1)    当前缓存的起始帧：1     当前帧间间隔：100
+当前FrameList中rtpHeader信息：  暂时忽略
+当前帧列信息：
+音频帧测试1
+音频帧测试2
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+但是第二个帧的时候就有问题了，可以看上面的，说明肯定被其他东西析构了，目前rtp程序只有一个函数负责析构，先打印下日志
+，竟然发现正常了，那就多测试几次，发现还是正常。。。。。难道真的因为int frameIdx = videoCatch.startFrameIdx + videoCatch.frameNum;这一句？连续测了三次都是正常，神奇，不知道为啥，搜索打印删除函数里的关键字，发现也没删除，神奇，把打印的函数记在这里，以后有时间再研究哪里的问题，应该是这个问题的连锁反应
+void printRtp(FrameList* framelist) {
+		std::cout << "*************************" << std::endl;
+		if (framelist->frameModid == VIDEO) {
+			std::cout << "帧列类型：" << "视频" << "\t";
+		}
+		else {
+			std::cout << "帧列类型：" << "音频" << "\t";
+		}
+		std::cout << "当前有几帧缓存：" << framelist->frameNum << "("  << framelist->frames.size()  << ")" << "\t当前缓存的起始帧：" << framelist->startFrameIdx << "\t当前帧间间隔：" << framelist->duration << std::endl;
+		std::cout << "当前FrameList中rtpHeader信息：" << "\t暂时忽略" << std::endl;
+		std::cout << "当前帧列信息：" << std::endl;
+		for (auto it = framelist->frames.begin(); it != framelist->frames.end(); it++) {
+			std::cout << "\t" << it->first << "帧：" << "发送次数：" << it->second->sendTimes << "\t含有"
+				<< it->second->packetNums << "个rtp包\t是整个视频的第" << it->second->frameIdx << "帧" << std::endl;
+			int j = 1;
+			auto startIt = it->second->realAddr;
+			for (; j <= it->second->packetNums; j++, startIt++) {
+				std::cout << "\t\t当前rtpPacket中rtpHeader信息：" << "\t暂时忽略" << std::endl;
+				//注意这里的(*startIt)->payload()[0]
+				std::cout << "\t\t\t" << j << "包的第一个字节：";
+				printf("%x", (*startIt)->payload()[0]);
+				std::cout  << "\t大小：" << (*startIt)->payload().size() << std::endl;
+			}
+		}
+		std::cout << "*************************" << std::endl;
+	}
+这是打印函数，中间改了int frameIdx = videoCatch.startFrameIdx + videoCatch.frameNum这一句为	int frameIdx = frameCatch->startFrameIdx + frameCatch->frameNum;
+
+
+36、为啥感觉有点不对呢，打印了好久，也没消费，但是总帧数就是上不去，再查查原因，发现可能是后面获取一帧就要打印很多日志，导致认为获取了很多，但是帧数上不去，可以在rtp临时增加两个变量，来分析获取的视频和音频帧，发现音频帧的个数与获取次数是对应的上的，视频帧个数和视频获取次数也能对应上，有的时候一次获取可能会产生4帧，，这样就解释的通了
+那到此为止，获取并存储的过程，所有的结构层面上的是没有问题的
+
+下面考虑发送时的结构层面能不能对应的上，其实上面一直有发送，但是好像只发送了一次就结束了，这次稍微改一下，发送逻辑，但是发现发送逻辑是在while1里面的呀，为啥日志没有发送痕迹呢，发现是有的，只是我没有注意到，那就打印一下发送的帧顺序对不对
+以及增加删除定时删除之后的逻辑，看看结构层面有没有问题，发现次数不加，音频帧发送没问题，但是视频如果碰到多个rtp包，只发送一个。。。，但是打印的时候，明明第17包是5个rtp包，然而发送时获取的包个数就是1个。。。。（而且还有段错误）
+然后发现1帧：发送次数：16       含有1个rtp包    是整个视频的第1帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+哈哈哈，逗我呢，全都时第一个iterator，这说明一开始存储的iterator是有问题的，音频的也是这个问题，那就查一下问题，一开始怀疑realAddr赋值时出问题了，然后我在线写了个很短的相同的测试逻辑是正确的，然后发现可能是sendFrame时获取的包，有问题，也就是frame一直是第一个
+tmd，果然发现了问题：
+//有了idx2Addr，就不用遍历frames了
+	if (frameIdx < frameList->startFrameIdx) {
+		std::cout << "帧获取过慢，已返回当前缓存的第一帧" << std::endl; return nullptr;
+		//说明当前客户端播放的太慢了，需要播放第一帧，这个时候应该告诉room这件事情
+		return frameList->frames[frameList->startFrameIdx];
+	}
+	else if (frameIdx > frameList->startFrameIdx + frameList->frameNum) {
+		std::cout << "帧获取超前" << std::endl; return nullptr;
+		return nullptr;
+	}
+	//正常帧
+	else {
+		return frameList->frames[frameList->startFrameIdx];
+	}
+return frameList->frames[frameList->startFrameIdx];这样肯定不对呀，正常帧，为啥返回第一帧，真的是，改一下发送逻辑想必就正确了
+还是不对，改完之后，在发送第二帧的时候，直接段错误
+发现地址有问题：
+//正常帧
+	else {
+		std::cout << "正在返回帧" << std::endl;
+		std::cout << "当前帧是第几帧：" << frameList->frames[frameIdx]->frameIdx;
+		return frameList->frames[frameIdx];
+	}
+日志：
+threadID:139632148358912DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+threadID:139632148358912DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+正在返回帧
+段错误(吐核)
+[tony@heihei bin]$ 
+frameList->frames[frameIdx]，也就是这个得到的frame不正确，又测试了一下，发现能够发送几帧，然后仔细观察了一下，发现音频帧缓存为21，但是发送22的时候就出现问题了，
+
+*************************
+帧列类型：音频  获取音频帧次数：21      当前有几帧缓存：21(21)  当前缓存的起始帧：1     当前帧间间隔：100
+当前FrameList中rtpHeader信息：  暂时忽略
+当前帧列信息：
+        21帧：发送次数：0       含有1个rtp包    是整个视频的第21帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        20帧：发送次数：1       含有1个rtp包    是整个视频的第20帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        19帧：发送次数：1       含有1个rtp包    是整个视频的第19帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        18帧：发送次数：1       含有1个rtp包    是整个视频的第18帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        17帧：发送次数：1       含有1个rtp包    是整个视频的第17帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        16帧：发送次数：1       含有1个rtp包    是整个视频的第16帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        15帧：发送次数：1       含有1个rtp包    是整个视频的第15帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        14帧：发送次数：1       含有1个rtp包    是整个视频的第14帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        13帧：发送次数：1       含有1个rtp包    是整个视频的第13帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        12帧：发送次数：1       含有1个rtp包    是整个视频的第12帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        11帧：发送次数：1       含有1个rtp包    是整个视频的第11帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        1帧：发送次数：1        含有1个rtp包    是整个视频的第1帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        2帧：发送次数：1        含有1个rtp包    是整个视频的第2帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        3帧：发送次数：1        含有1个rtp包    是整个视频的第3帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        4帧：发送次数：1        含有1个rtp包    是整个视频的第4帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        5帧：发送次数：1        含有1个rtp包    是整个视频的第5帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        6帧：发送次数：1        含有1个rtp包    是整个视频的第6帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        7帧：发送次数：1        含有1个rtp包    是整个视频的第7帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        8帧：发送次数：1        含有1个rtp包    是整个视频的第8帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        9帧：发送次数：1        含有1个rtp包    是整个视频的第9帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        10帧：发送次数：1       含有1个rtp包    是整个视频的第10帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+正在返回帧：21
+当前帧是第几帧：21threadID:140029665986304DEBUG:../tools/rtsp/rtp/src/rtp.cpp->sendFrame->line:46=[当前发送的帧类型：音频]
+threadID:140029665986304DEBUG:../tools/rtsp/rtp/src/rtp.cpp->sendFrame->line:47=[当前发送的第几帧：21   当前帧需要发送几个rtp包：1]
+threadID:140029665986304DEBUG:./include/MediaServer.h->packageMsg->line:54=[requestHandle开始回复数据]
+threadID:140029665986304DEBUG:src/Udp.cpp->sendMsg->line:145=[正在执行SendMsg]
+threadID:140029665986304DEBUG:src/Udp.cpp->sendMsg->line:146=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:8270]
+threadID:140029665986304DEBUG:src/Udp.cpp->sendMsg->line:183=[sendMsg正在加锁]
+threadID:140029665986304DEBUG:src/Udp.cpp->sendMsg->line:210=[当前的数据为:5,870,
+
+。。。。。。。
+threadID:140029932287744DEBUG:src/Udp.cpp->processWrite->line:87=[开始组织数据并响应，预响应的消息为：，包大小为：118]
+threadID:140029932287744DEBUG:src/Udp.cpp->processWrite->line:101=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:20000]
+threadID:140029932287744DEBUG:src/Buffer.cpp->writeBufferToSocket->line:460=[正在发消息给：127.0.0.1:20000]
+threadID:140029932287744DEBUG:src/Buffer.cpp->writeBufferToSocket->line:462=[writeBufferToSocket2加锁]
+threadID:140029932287744DEBUG:src/Buffer.cpp->writeBufferToSocket->line:479=[writeBufferToSocket2解锁]
+threadID:140029932287744DEBUG:src/Buffer.cpp->writeBufferToSocket->line:482=[本次写到socket的字节数为：118]
+threadID:140029932287744DEBUG:src/Udp.cpp->processWrite->line:121=[本次发送的字节大小为：118]
+threadID:140029932287744DEBUG:src/Udp.cpp->processWrite->line:129=[正在关闭写事件--直接关闭]
+threadID:140029932287744DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+threadID:140029932287744DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:6]
+threadID:140029932287744DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+threadID:140029932287744DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+正在返回帧：22
+段错误(吐核)
+那可能是提供的索引有问题，超出了起止区间，打印一下试试，果然是有问题的
+帧列类型：音频  获取音频帧次数：36      当前有几帧缓存：36(36)  当前缓存的起始帧：1     当前帧间间隔：100
+当前FrameList中rtpHeader信息：  暂时忽略
+当前帧列信息：
+        36帧：发送次数：0       含有1个rtp包    是整个视频的第36帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：965
+        35帧：发送次数：1       含有1个rtp包    是整个视频的第35帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：877
+        34帧：发送次数：1       含有1个rtp包    是整个视频的第34帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        33帧：发送次数：1       含有1个rtp包    是整个视频的第33帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        32帧：发送次数：1       含有1个rtp包    是整个视频的第32帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        31帧：发送次数：1       含有1个rtp包    是整个视频的第31帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        30帧：发送次数：1       含有1个rtp包    是整个视频的第30帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        29帧：发送次数：1       含有1个rtp包    是整个视频的第29帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        28帧：发送次数：1       含有1个rtp包    是整个视频的第28帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        27帧：发送次数：1       含有1个rtp包    是整个视频的第27帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        26帧：发送次数：1       含有1个rtp包    是整个视频的第26帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        25帧：发送次数：1       含有1个rtp包    是整个视频的第25帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        24帧：发送次数：1       含有1个rtp包    是整个视频的第24帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        23帧：发送次数：1       含有1个rtp包    是整个视频的第23帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        10帧：发送次数：1       含有1个rtp包    是整个视频的第10帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        9帧：发送次数：1        含有1个rtp包    是整个视频的第9帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        8帧：发送次数：1        含有1个rtp包    是整个视频的第8帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        7帧：发送次数：1        含有1个rtp包    是整个视频的第7帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        6帧：发送次数：1        含有1个rtp包    是整个视频的第6帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        5帧：发送次数：1        含有1个rtp包    是整个视频的第5帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        4帧：发送次数：1        含有1个rtp包    是整个视频的第4帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        3帧：发送次数：1        含有1个rtp包    是整个视频的第3帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        2帧：发送次数：1        含有1个rtp包    是整个视频的第2帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        1帧：发送次数：1        含有1个rtp包    是整个视频的第1帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        11帧：发送次数：1       含有1个rtp包    是整个视频的第11帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        12帧：发送次数：1       含有1个rtp包    是整个视频的第12帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        13帧：发送次数：1       含有1个rtp包    是整个视频的第13帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        14帧：发送次数：1       含有1个rtp包    是整个视频的第14帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        15帧：发送次数：1       含有1个rtp包    是整个视频的第15帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        16帧：发送次数：1       含有1个rtp包    是整个视频的第16帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        17帧：发送次数：1       含有1个rtp包    是整个视频的第17帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        18帧：发送次数：1       含有1个rtp包    是整个视频的第18帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        19帧：发送次数：1       含有1个rtp包    是整个视频的第19帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        20帧：发送次数：1       含有1个rtp包    是整个视频的第20帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        21帧：发送次数：1       含有1个rtp包    是整个视频的第21帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        22帧：发送次数：1       含有1个rtp包    是整个视频的第22帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+要取的帧：36    当前列表起始帧：1       当前列表结束帧：37
+正在返回帧：36
+当前帧是第几帧：36threadID:140051254990592DEBUG:../tools/rtsp/rtp/src/rtp.cpp->sendFrame->line:46=[当前发送的帧类型：音频]
+threadID:140051254990592DEBUG:../tools/rtsp/rtp/src/rtp.cpp->sendFrame->line:47=[当前发送的第几帧：36   当前帧需要发送几个rtp包：1]
+threadID:140051254990592DEBUG:./include/MediaServer.h->packageMsg->line:54=[requestHandle开始回复数据]
+threadID:140051254990592DEBUG:src/Udp.cpp->sendMsg->line:145=[正在执行SendMsg]
+threadID:140051254990592DEBUG:src/Udp.cpp->sendMsg->line:146=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:8270]
+threadID:140051254990592DEBUG:src/Udp.cpp->sendMsg->line:183=[sendMsg正在加锁]
+threadID:140051254990592DEBUG:src/Udp.cpp->sendMsg->line:210=[当前的数据为:5,988,
+
+。。。。。。
+threadID:140051391780608DEBUG:src/Udp.cpp->processWrite->line:129=[正在关闭写事件--直接关闭]
+threadID:140051391780608DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+threadID:140051391780608DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:6]
+threadID:140051391780608DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+threadID:140051391780608DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+要取的帧：37    当前列表起始帧：1       当前列表结束帧：37
+正在返回帧：37
+段错误(吐核)
+[tony@heihei bin]$ 
+可以看到实际保存的只有36帧，这说明起止区间设计的有问题
+
+std::cout << "要取的帧：" << frameIdx << "\t当前列表起始帧：" << frameList->startFrameIdx << "\t当前列表结束帧：" << frameList->startFrameIdx + frameList->frameNum << std::endl;
+	if (frameIdx < frameList->startFrameIdx) {
+		std::cout << "帧获取过慢，已返回当前缓存的第一帧" << std::endl; return nullptr;
+		//说明当前客户端播放的太慢了，需要播放第一帧，这个时候应该告诉room这件事情
+		return frameList->frames[frameList->startFrameIdx];
+	}
+	else if (frameIdx > frameList->startFrameIdx + frameList->frameNum) {
+		std::cout << "帧获取超前" << std::endl; 
+		return nullptr;
+	}
+	//正常帧
+	else {
+		std::cout << "正在返回帧：" << frameIdx << std::endl;
+		std::cout << "当前帧是第几帧：" << frameList->frames[frameIdx]->frameIdx;
+		return frameList->frames[frameIdx];
+	}
+	return nullptr;
+中间的else if加上=比如当前左边为1，右边的>startFrameIdx 也为1，那就是1+1 = 2了，显然设计的不对，或者右边-1，更加直观，我当前能获取的就这么多，你超过这个区间（>）就获取失败了
+最终改成
+else if (frameIdx > frameList->startFrameIdx + frameList->frameNum - 1) {  //注意这里一定要减1，否则会段错误
+一切正常了，
+37、但是发现视频发送次数正确，但是音频发送次数不对劲，发现音频帧发送的次数很少，大部分都是视频发送的。。。。。
+要取的帧：24    当前列表起始帧：1       当前列表结束帧：24
+帧获取超前
+*************************
+帧列类型：音频  获取音频帧次数：24      当前有几帧缓存：24(24)  当前缓存的起始帧：1     当前帧间间隔：100
+当前FrameList中rtpHeader信息：  暂时忽略
+当前帧列信息：
+        24帧：发送次数：0       含有1个rtp包    是整个视频的第24帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        23帧：发送次数：0       含有1个rtp包    是整个视频的第23帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        10帧：发送次数：1       含有1个rtp包    是整个视频的第10帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        9帧：发送次数：1        含有1个rtp包    是整个视频的第9帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：847
+        8帧：发送次数：1        含有1个rtp包    是整个视频的第8帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一个字节：0      大小：846
+        7帧：发送次数：1        含有1个rtp包    是整个视频的第7帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+可以看到发送音频的线程一直想要发的（要取的帧：24    当前列表起始帧：1       当前列表结束帧：24），但是一直发送获取超前，就是因为你第一次发不成功也++，后续一直++
+
+发现音频帧一直进入到获取超前的状态：然后返回nullptr，但是返回nullptr，你别++呀，导致即使返回nullptr，当前用户的音频帧也++了
+改一下：
+	if (frameType == VIDEO) {
+					curFrameIdxPtr = &it->curVideoIdx;	//注意->优先级高于&
+				}
+				else {
+					curFrameIdxPtr = &it->curAudioIdx;
+				}
+				int sentFrameIdx = rtpPacketManager->sendFrame(frameType, curFrameIdx, it->addr);
+				if (sentFrameIdx > 0) {	//只有发送成功，才会操作下标，如果发送不成功，就啥都不干
+					if (sentFrameIdx == *curFrameIdxPtr) {	//如果发送的和要求发送的下标一致，则++
+						(*curFrameIdxPtr)++;
+					}
+					else {
+						//如果不一致，那就设为已发送的帧+1
+						(*curFrameIdxPtr) = sentFrameIdx + 1;
+					}
+				}
+一切正常了
+38、在添加线程函数时，发现绑定器或者线程不支持重载函数，
+./tools/rtsp/rtp/src/rtp.cpp: 在成员函数‘void RTP::run()’中:
+../tools/rtsp/rtp/src/rtp.cpp:548:62: 错误：对‘bind(<unresolved overloaded function type>, RTP* const)’的调用没有匹配的函数
+  auto deleteFrameFunc = std::bind(&RTP::deleteOldPacket, this);
+需要显示的指出类型
+	std::thread deleteFrame((void(RTP::*)()) & RTP::deleteOldPacket, this);
+
+接下来加入删除线程，看看效果怎么样
+发现删除一次之后就会段错误，在执行删除函数时，删除第一个帧后，再删除第二个帧就会出现错误，日志：
+139961240123136threadID:139961639565056DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:6DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:486=[deleteOldPacket正在删除]
+threadID:139961240123136DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:512=[删除帧后的起始帧为：2]
+]
+threadID:139961639565056DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+threadID:139961639565056DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：4的读事件响应完成]
+threadID:139961639565056DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+threadID:139961639565056DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+threadID:139961639565056DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+段错误(吐核)
+[tony@heihei bin]$ 
+
+源码：
+int startFrame = frameList->startFrameIdx;
+for (; startFrame < frameList->frameNum; startFrame++) {
+		auto& frame = frames[startFrame];
+		if (frame->sendTimes == curUserNums) {
+			//删除rtp包
+			auto rtpPacketIt = frame->realAddr;
+			int rtpPacketNums = frame->packetNums; //当前rtp包包含几个
+			//依次删除对应的rtp包
+			for (int i = 0; i < rtpPacketNums; i++) {
+				//先保存当前it的副本，因为如果直接删除it，会导致当前迭代器失效，或者使用++it，不能使用++it，这样会导致删除的是后面那一个，并且也会迭代器失效
+				auto curRtpPacketIt = rtpPacketIt;
+				curRtpPacketIt++;  //和i++的次数一样多
+				//需要释放对应的mediaService::RtpPacket*
+				delete* curRtpPacketIt;		//这一句导致必须一个一个删除
+				frameList->rtpPacket.erase(curRtpPacketIt);  //删除当前rtp包
+			}
+			
+			//然后删除对应的视频帧索引
+			frames.erase(startFrame);	//注意这里是删除的话，输入的是索引
+			//释放frame，应该后删除这个
+			delete frame;
+
+			frameList->frameNum--;
+			frameList->startFrameIdx += 1;	//别忘记更新startFrameIdx，很容易忘记
+			Debug("删除帧后的起始帧为：%d", frameList->startFrameIdx);
+		}
+		else {
+			//如果当前帧不相等了，那么后续的肯定不相等
+			break;
+		}
+	}
+打印一下日志，看具体哪行代码出问题了
+发现是
+for (int i = 0; i < rtpPacketNums; i++) {
+				Debug("正在删除%d个包", i);
+				//先保存当前it的副本，因为如果直接删除it，会导致当前迭代器失效，或者使用++it，不能使用++it，这样会导致删除的是后面那一个，并且也会迭代器失效
+				auto curRtpPacketIt = rtpPacketIt;
+				curRtpPacketIt++;  //和i++的次数一样多
+				//需要释放对应的mediaService::RtpPacket*
+				delete* curRtpPacketIt;		//这一句导致必须一个一个删除
+				frameList->rtpPacket.erase(curRtpPacketIt);  //删除当前rtp包
+			}
+这里出问题了
+然后再打印
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:486=[deleteOldPacket正在删除]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:490=[正在删除startFrame：1]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:494=[正在删除rtp包]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:499=[正在删除1个包]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:502=[1]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:504=[2]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:507=[3]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:509=[4]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:511=[rtp包删除完成]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:519=[删除帧后的起始帧为：2]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:490=[正在删除startFrame：2]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:494=[正在删除rtp包]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:499=[正在删除1个包]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:502=[1]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:504=[2]
+threadID:140499469563648DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:507=[3]
+发现是
+	frameList->rtpPacket.erase(curRtpPacketIt);  //删除当前rtp包
+这句有问题
+不是
+	//需要释放对应的mediaService::RtpPacket*
+				delete* curRtpPacketIt;		//这一句导致必须一个一个删除
+				Debug("3");
+				frameList->rtpPacket.erase(curRtpPacketIt);  //删除当前rtp包
+为啥先释放，再删除？颠倒一下试试，而且为啥frameList->rtpPacket.erase(curRtpPacketIt);  //删除当前rtp包  这句能对呢，>rtpPacket存的是mediaService::RtpPacket*，迭代器能删除？？？？？？肯定不行的
+我先颠倒位置，不改这句试试frameList->rtpPacket.erase(curRtpPacketIt);
+果然还是段错误，那改成引用frameList->rtpPacket.erase(*curRtpPacketIt); 试试，编译不通过，好像必须要迭代器才能删除
+好像找到了原因
+auto curRtpPacketIt = rtpPacketIt;
+				Debug("1");
+				curRtpPacketIt++;  //和i++的次数一样多
+				Debug("2");
+				//frameList->rtpPacket.erase(curRtpPacketIt);  //删除当前rtp包
+				frameList->rtpPacket.erase(curRtpPacketIt);  //删除当前rtp包
+rtpPacketIt;是外部得到的当前it，curRtpPacketIt 是当前it的副本，我应该让it++，然后删除副本的。。。。。。但是上面的逻辑是不对的
+改成如下：
+auto curRtpPacketIt = rtpPacketIt;
+				Debug("1");
+				//curRtpPacketIt++;  //和i++的次数一样多
+				//注意是rtpPacketIt++，否则第二次循环的时候删除的还是上一次循环的，就会段错误
+				rtpPacketIt++;
+				Debug("2");
+				frameList->rtpPacket.erase(curRtpPacketIt);  //删除当前rtp包
+注意里面的注释就是这次段错误的原因
+发现没有段错误了，随机分析了两个打印的内存结构，没有问题（起止，以及数量没有问题），不知道以后有没有问题
+
+下面就是内容方面的了
+首先是rtppayload的前面几个字节，视频单包的，没有问题，视频多包的是两个字节，音频包的是2个字节
+39、
+结果测试的时候发现：
+threadID:140638537774848DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:486=[deleteOldPacket正在删除]
+threadID:140638537774848DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:490=[正在删除startFrame：1]
+threadID:140638537774848DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:486=[deleteOldPacket正在删除]
+threadID:140638537774848DEBUG:../tools/rtsp/rtp/src/rtp.cpp->deleteOldPacket->line:490=[正在删除startFrame：-1]
+段错误(吐核)
+，删除的时候碰巧，为初始状态，这个时候，简单判断一下把
+
+40、
+视频单包的没问题，音频包的前3个字节没问题，但是第四个字节，感觉不对，实际第四个字节是对的，比如打印出的信息是这样的：
+帧列类型：音频  获取音频帧次数：1       当前有几帧缓存：1(1)    当前缓存的起始帧：1     当前帧间间隔：100
+当前FrameList中rtpHeader信息：  暂时忽略
+当前帧列信息：
+        1帧：发送次数：0        含有1个rtp包    是整个视频的第1帧
+                当前rtpPacket中rtpHeader信息：  暂时忽略
+                        1包的第一字节：0 第二字节：10 第三字节：1a 第四字节：70 大小：846
+然后推了一下发现第四字节差来4个字节
+
+然后看了aac之前打印的不含adts的码流也是846呀，
+当前帧：1       当前帧长：packet.size846
+所以四个字节的填充是对的，但是这里不应该输出850嘛，因为我已经填充了4个字节的数据了
+发现了问题：
+	uint8_t payload[frameSize + 4];
+			payload[0] = 0x00;	//第一个字节必须为0x00
+			payload[1] = 0x10;	//第二个字节必须为0x10
+			payload[2] = (frameSize & 0x1FE0) >> 5;	//第三个字节保存数据大小的高八位。frameSize & 0x1FE0是获取size的高8位
+			//（因为最多只保存13bit，所以是从低6位往高数8位的，所以就是0x1FE0），然后往低5位右移5位即可得到，强制赋值给一个字节刚刚好（会截断）
+			payload[3] = (frameSize & 0x1F) << 3;		//第四个字节的高5位保存数据大小的低5位。frameSize & 0x1F得到低5位的值（8位，那么低5位往高移三位即可）
+			//然后是不带adts头的数据
+			//payload += frame->data;  //为什么可以直接加，可以看https://blog.csdn.net/qq_45909595/article/details/104152595 这是string的操作
+			memcpy(payload + 4, frame->data, frameSize);
+			//如果不想赋值，可以一开始就操作audioRtpPacket.payload()
+			audioRtpPacket->set_payload(std::string((char*)payload, frameSize));		//这个并不够高效
+这里
+audioRtpPacket->set_payload(std::string((char*)payload, frameSize));		//这个并不够高效
+肯定不对呀
+frameSize应该+4
+改过来就行了，那目前位置，其他部分也检查一下
+
+接下来是视频多包的了，第一个字节正确，第二个字节也正确（只随机检查了一个）
+
+下面就是rtpHeader的音视频包的前12个字节了
+这里重点关注的应该是seq和timestamp以及maker

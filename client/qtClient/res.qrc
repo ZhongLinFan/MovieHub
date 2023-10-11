@@ -1,0 +1,12 @@
+<RCC>
+    <qresource prefix="/img">
+        <file alias="welcome">img/welcome.jpg</file>
+        <file alias="return">img/lastPage.PNG</file>
+        <file alias="head1">img/headIcon1.jpeg</file>
+        <file alias="head2">img/headIcon2.jpg</file>
+        <file alias="head3">img/headIcon3.jpg</file>
+        <file alias="head4">img/headIcon4.jpg</file>
+        <file alias="head5">img/headIcon5.jpg</file>
+        <file alias="head6">img/headIcon6.jpg</file>
+    </qresource>
+</RCC>

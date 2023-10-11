@@ -1,0 +1,67 @@
+syntax="proto3";
+
+package user;
+
+//群信息
+message ChatGroup{
+	string name = 1;
+	int32 gid = 2;
+}
+
+//电影信息
+message File{
+	int32 fid = 1;
+	string name = 2;
+}
+
+//朋友信息
+message Person{
+	int32 uid = 1;
+	string name = 2;
+}
+
+//请求某个用户的favorite
+message GetUserFavoriteRequest{
+	int32 uid = 1;
+}
+
+
+message GetUserFavoriteResponse{
+	int32 uid = 1;
+	repeated File file = 4;
+}
+
+//请求某个用户的朋友列表
+message GetFriendsRequest{
+	int32 uid = 1;
+}
+
+message GetFriendsResponse{
+	int32 uid = 1;
+	repeated Person friend = 2;
+}
+
+//查询满足一定条件的组成员请求
+message GetGroupMemberRequest{
+	int32 uid = 1;  
+	int32 gid = 2; 
+	string condition = 3;
+}
+
+//查询满足一定条件的组成员响应
+message GetGroupMemberResponse{
+	int32 uid = 1;
+	int32 gid = 2;
+	repeated Person member = 3;
+}
+
+//获得某个用户的群列表请求
+message GetUserGroupsRequest{
+	int32 uid = 1;  
+}
+
+//获得某个用户的群列表响应
+message GetUserGroupsResponse{
+	int32 uid = 1;
+	repeated ChatGroup group = 2;
+}

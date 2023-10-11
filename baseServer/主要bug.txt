@@ -1,0 +1,2039 @@
+在实现这些功能时基本没碰到什么障碍，一些基本bug都是拼错，.和->的错位，string和sprintf交互的错误，还有就是sql语句拼错导致的数据查询不准，还有就是protobuf多文件共同协作的一些规则问题，比如怎么在一个文件编译使用另一个文件的协议，路径怎么写等等，还有protobuf在生成方法的时候不是严格按照属性名称生成的，比如frined大小写全都时小写，漏写函数声明等问题
+具体bug可以查看同级目录下的mysqlAgent.log的第一次的log生成文件，因为都很好解决，所以就没有特别记录
+
+2023年8月18日21点34分在实现完整功能时（注册登录转发添加好友组喜欢等），实现makefile的bug都在linux对应的文件里记录了
+1、结构体构造函数和结构体名称不一致，会报错
+错误：ISO C++ 不允许声明无类型的‘RecvSendID’ [-fpermissive]
+  RecvSendID(int recvId, int sendId) {
+                                   ^
+2、错误：对‘BaseServer::addHandleFunc(TcpServer*&, <unresolved overloaded function type>, int)’的调用没有匹配的函数
+  addHandleFunc<TcpServer, baseService::LoginRequest>(tcpServer, BaseServer::handleLoginStep1, (int)baseService::ID_LoginRequest);
+
+addHandleFunc<TcpServer, baseService::LoginRequest>(tcpServer, BaseServer::handleLoginStep1, (int)baseService::ID_LoginRequest);第二个参数必须要加&，否则无法 解析
+
+3、addHandleFunc<TcpServer, baseService::LoginRequest>(tcpServer, &BaseServer::handleLoginStep1, (int)baseService::ID_LoginRequest);
+错误：对‘BaseServer::addHandleFunc(TcpServer*&, void (BaseServer::*)(NetConnection*, void*), int)’的调用没有匹配的函数
+  addHandleFunc<TcpServer, baseService::LoginRequest>(tcpServer, &BaseServer::handleLoginStep1, (int)baseService::ID_LoginRequest);
+                                                                                                                                 ^ij
+src/BaseServer.cpp:7:129: 附注：备选是：
+In file included from src/BaseServer.cpp:1:0:
+./include/BaseServer.h:125:7: 附注：template<class Conn, class RecvMsg_T> bool BaseServer::addHandleFunc(Conn*, void (BaseServer::*)(Conn, void*), int, int)
+  bool addHandleFunc(Conn* conn, void(BaseServer::* func)(Conn, void*), int recvId, int sendId = -1);
+       ^
+./include/BaseServer.h:125:7: 附注：  template argument deduction/substitution failed:
+src/BaseServer.cpp:7:129: 附注：  cannot convert ‘&BaseServer::handleLoginStep1’ (type ‘void (BaseServer::*)(NetConnection*, void*)’) to type ‘void (BaseServer::*)(TcpServer, void*)’
+最后一个cannot convert...
+一定要注意，这个注册函数的参数可以是多态（模板参数可以传递），可以进行推导，这里错误的原因是NetConnection*是指针，而(TcpServer, 这个是对象，后面加上*即可
+（但有些纯模板参数推导多态好像是不行的，在lbservice那里好像遇到过）
+
+这个void BaseServer::handleLoginStep1(NetConnection* clientConn, void* userData)中的NetConnecttion不能改成TcpServer，因为server不是继承于netconnect的（所以我也不知道上面这个是怎么注册的（addFunc都改成TcpServer，handleLoginStep1第一个参数也改成TCpServcer），可能是类模板先生成代码，还没有编译生成注册代码？？？因为只要一执行注册程序准出错，因为根本不是继承关系，但是神奇的是改完之后，addFunc那行没报错************这个没搞清楚，注意执行的命令是-c -o还没有到链接阶段，可能是碰到addFunc只实例化出来代码，但是实例化addMsgROuter不报错吗，因为根本不可能一致的，如果想试验，在addFunc和handleLoginStep1都改成TcpServer即可），所以要以这个NetConnecttion为基准，改其他的，如果只改handleLoginStep1为NetConnecttion，那么会报
+ cannot convert ‘&BaseServer::handleLoginStep1’ (type ‘void (BaseServer::*)(NetConnection*, void*)’) to type ‘void (BaseServer::*)(TcpServer*, void*)’，这好像又是不支持多态推导的，在传递函数地址的时候。。。。。
+
+这里处理的动作是
+template<class Server_T, class Conn_T, class RecvMsg_T>
+bool BaseServer::addHandleFunc(Server_T* server, void(BaseServer::* func)(Conn_T*, void*), int recvId, int sendId=-1) {
+增加了server类型和链接类型，上面之所以出现类型转换的原因是我把主机和连接的类型认为是一样的了，但其实TCp类型的是NetConnection而udp的则是Udp，这样就可以避免隐式转化，但至于传递函数地址，隐式转换继承关系时，成不成立，以及为啥上面的能编译没错，还不清楚
+，改了之后，没有问题了
+4、bind必须是地址
+std::bind(handleLoginStep2, this, std::placeholders::_1, std::placeholders::_2));
+这个就会报无法解析
+‘bind(<unresolved overloaded function type>, BaseServer* const, const std::_Placeholder<1>&, const std::_Placeholder<2>&)’的调用没有匹配的函数
+
+5、很简单错误就不写了，比如参数传递不一致，未定义的变量，（大量的bug后面这三个）udpSendMsg和TcpSendMsg以及ParseMsg调用参数不匹配，协议里没有对应的成员，package调用参数传递等等，都是很简单，但是很多这种小错误，有些稍微值得注意的，也在对应的位置注释了
+
+6、expected type-specifier before ‘User’
+tmd，定义的结构体是UserData，调用的时候是User()， 然后就报错上面的提示，而且还要给UserData提供有参构造，因为默认的是无参构造，还要有public
+
+7、if (typeid(Request_T) == typeid(user::GetUserFavoriteResponse)) {
+		//protobuf并没有提供简单的赋值函数，这样写是不对的：response.set_favoritelist(*userInfo.get());
+		//可以使用GetUserFavoriteResponse重载的=，如果还不行，自己可以实现一个for
+		//for (int i = 0; i < userInfo.file_size(); i++)
+		//下面已经没有错了
+		response.favoritelist = *userInfo.get();
+	}
+	else if (typeid(Request_T) == typeid(user::GetFriendsResponse)) {
+		response.set_friendlist(*userInfo.get());
+	}
+	else if (typeid(Request_T) == typeid(user::GetUserGroupsResponse)) {
+		response.set_grouplist(*userInfo.get());
+	}
+写成下面两个是不对的，protobuf没有提供响应的函数
+
+8、出现了一个一大串密密麻麻的错误
+
+In file included from /usr/include/c++/4.8.2/functional:55:0,
+                 from /usr/include/c++/4.8.2/bits/stl_algo.h:66,
+                 from /usr/include/c++/4.8.2/algorithm:62,
+                 from /usr/local/include/google/protobuf/stubs/common.h:38,
+                 from /usr/local/include/google/protobuf/io/coded_stream.h:149,
+                 from ../tools/protobuf/baseService/baseService.pb.h:23,
+                 from ./include/BaseServer.h:1,
+                 from src/BaseServer.cpp:1:
+/usr/include/c++/4.8.2/tuple: In instantiation of ‘std::pair<_T1, _T2>::pair(std::tuple<_Args1 ...>&, std::tuple<_Args2 ...>&, std::_Index_tuple<_Indexes1 ...>, std::_Index_tuple<_Indexes2 ...>) [with _Args1 = {std::type_index&&}; long unsigned int ..._Indexes1 = {0ul}; _Args2 = {}; long unsigned int ..._Indexes2 = {}; _T1 = const std::type_index; _T2 = RecvSendId]’:
+/usr/include/c++/4.8.2/tuple:1079:63:   required from ‘std::pair<_T1, _T2>::pair(std::piecewise_construct_t, std::tuple<_Args1 ...>, std::tuple<_Args2 ...>) [with _Args1 = {std::type_index&&}; _Args2 = {}; _T1 = const std::type_index; _T2 = RecvSendId]’
+/usr/include/c++/4.8.2/bits/hashtable_policy.h:195:39:   required from ‘std::__detail::_Hash_node<_Value, false>::_Hash_node(_Args&& ...) [with _Args = {const std::piecewise_construct_t&, std::tuple<std::type_index&&>, std::tuple<>}; _Value = std::pair<const std::type_index, RecvSendId>]’
+/usr/include/c++/4.8.2/ext/new_allocator.h:120:4:   required from ‘void __gnu_cxx::new_allocator<_Tp>::construct(_Up*, _Args&& ...) [with _Up = std::__detail::_Hash_node<std::pair<const std::type_index, RecvSendId>, false>; _Args = {const std::piecewise_construct_t&, std::tuple<std::type_index&&>, std::tuple<>}; _Tp = std::__detail::_Hash_node<std::pair<const std::type_index, RecvSendId>, false>]’
+/usr/include/c++/4.8.2/bits/hashtable.h:727:6:   required from ‘std::_Hashtable<_Key, _Value, _Alloc, _ExtractKey, _Equal, _H1, _H2, _Hash, _RehashPolicy, _Traits>::__node_type* std::_Hashtable<_Key, _Value, _Alloc, _ExtractKey, _Equal, _H1, _H2, _Hash, _RehashPolicy, _Traits>::_M_allocate_node(_Args&& ...) [with _Args = {const std::piecewise_construct_t&, std::tuple<std::type_index&&>, std::tuple<>}; _Key = std::type_index; _Value = std::pair<const std::type_index, RecvSendId>; _Alloc = std::allocator<std::pair<const std::type_index, RecvSendId> >; _ExtractKey = std::__detail::_Select1st; _Equal = std::equal_to<std::type_index>; _H1 = std::hash<std::type_index>; _H2 = std::__detail::_Mod_range_hashing; _Hash = std::__detail::_Default_ranged_hash; _RehashPolicy = std::__detail::_Prime_rehash_policy; _Traits = std::__detail::_Hashtable_traits<false, false, true>; std::_Hashtable<_Key, _Value, _Alloc, _ExtractKey, _Equal, _H1, _H2, _Hash, _RehashPolicy, _Traits>::__node_type = std::__detail::_Hash_node<std::pair<const std::type_index, RecvSendId>, false>]’
+/usr/include/c++/4.8.2/bits/hashtable_policy.h:519:8:   required from ‘std::__detail::_Map_base<_Key, _Pair, _Alloc, std::__detail::_Select1st, _Equal, _H1, _H2, _Hash, _RehashPolicy, _Traits, true>::mapped_type& std::__detail::_Map_base<_Key, _Pair, _Alloc, std::__detail::_Select1st, _Equal, _H1, _H2, _Hash, _RehashPolicy, _Traits, true>::operator[](std::__detail::_Map_base<_Key, _Pair, _Alloc, std::__detail::_Select1st, _Equal, _H1, _H2, _Hash, _RehashPolicy, _Traits, true>::key_type&&) [with _Key = std::type_index; _Pair = std::pair<const std::type_index, RecvSendId>; _Alloc = std::allocator<std::pair<const std::type_index, RecvSendId> >; _Equal = std::equal_to<std::type_index>; _H1 = std::hash<std::type_index>; _H2 = std::__detail::_Mod_range_hashing; _Hash = std::__detail::_Default_ranged_hash; _RehashPolicy = std::__detail::_Prime_rehash_policy; _Traits = std::__detail::_Hashtable_traits<false, false, true>; std::__detail::_Map_base<_Key, _Pair, _Alloc, std::__detail::_Select1st, _Equal, _H1, _H2, _Hash, _RehashPolicy, _Traits, true>::mapped_type = RecvSendId; std::__detail::_Map_base<_Key, _Pair, _Alloc, std::__detail::_Select1st, _Equal, _H1, _H2, _Hash, _RehashPolicy, _Traits, true>::key_type = std::type_index]’
+/usr/include/c++/4.8.2/bits/unordered_map.h:600:20:   required from ‘std::unordered_map<_Key, _Tp, _Hash, _Pred, _Alloc>::mapped_type& std::unordered_map<_Key, _Tp, _Hash, _Pred, _Alloc>::operator[](std::unordered_map<_Key, _Tp, _Hash, _Pred, _Alloc>::key_type&&) [with _Key = std::type_index; _Tp = RecvSendId; _Hash = std::hash<std::type_index>; _Pred = std::equal_to<std::type_index>; _Alloc = std::allocator<std::pair<const std::type_index, RecvSendId> >; std::unordered_map<_Key, _Tp, _Hash, _Pred, _Alloc>::mapped_type = RecvSendId; std::unordered_map<_Key, _Tp, _Hash, _Pred, _Alloc>::key_type = std::type_index]’
+./include/BaseServer.h:71:34:   required from ‘bool TypeIdentifier::setIdentifier(int, int) [with type = baseService::LoginRequest]’
+src/BaseServer.cpp:568:2:   required from ‘bool BaseServer::addHandleFunc(Server_T*, void (BaseServer::*)(Conn_T*, void*), int, int) [with Server_T = TcpServer; Conn_T = NetConnection; RecvMsg_T = baseService::LoginRequest]’
+src/BaseServer.cpp:7:144:   required from here
+/usr/include/c++/4.8.2/tuple:1090:70: 错误：对‘RecvSendId::RecvSendId()’的调用没有匹配的函数
+         second(std::forward<_Args2>(std::get<_Indexes2>(__tuple2))...)
+                                                                      ^
+/usr/include/c++/4.8.2/tuple:1090:70: 附注：备选是：
+In file included from src/BaseServer.cpp:1:0:
+./include/BaseServer.h:23:2: 附注：RecvSendId::RecvSendId(int, int)
+  RecvSendId(int recvId, int sendId) {
+  ^
+./include/BaseServer.h:23:2: 附注： 备选需要 2 实参，但提供了 0 个
+./include/BaseServer.h:21:8: 附注：constexpr RecvSendId::RecvSendId(const RecvSendId&)
+ struct RecvSendId {
+        ^
+./include/BaseServer.h:21:8: 附注： 备选需要 1 实参，但提供了 0 个
+./include/BaseServer.h:21:8: 附注：constexpr RecvSendId::RecvSendId(RecvSendId&&)
+./include/BaseServer.h:21:8: 附注： 备选需要 1 实参，但提供了 0 个
+make: *** [src/BaseServer.o] 错误 1
+[tony@heihei baseServer]$ 
+
+发现是‘RecvSendId::RecvSendId()’的调用没有匹配的函数，然后我就提供了一个无参函数，不知道后续结果会是什么，先不管了
+//发现可以正常记录，那就没事了，可能内部调用再赋值之类的，只要功能正常就可以了
+
+9、编译出现g++ -g -Wall -std=c++11 -fPIC -O2 -o ./bin/baseServer  ./src/server.o  ./src/BaseServer.o ../tools/protobuf/mysqlService ../tools/protobuf/lbService ../tools/protobuf/common  ../tools/protobuf/baseService/baseService.pb.o -I./include -I-I/usr/include/mysql -I../reactor/include -I../tools/protobuf/mysqlService -I../tools/protobuf/lbService -I../tools/protobuf/common -I../tools/protobuf/baseService   -L../reactor/lib -lreactor -L/usr/lib64/mysql -lmysqlclient -lpthread -lm -lrt -ldl   -lpthread   -lprotobuf    #cpp -o obj 或者 -o obj cpp ，如果有头文件路径需要指定
+../tools/protobuf/mysqlService: 文件无法辨识: 是一个目录
+可以发现，一些.o文件是路径了
+PROTOPATH=$(MYSQLSERVICE) $(LBSERVICE) $(COMMONSERVICE) $(BASESERVICE)                                     
+PROTOSRC=$(wildcard $(PROTOPATH)/*.cc) 
+这里写的有问题，因为相当于前面三个不提取，最后一个提取cc文件
+改成这样即可
+PROTOPATH=$(MYSQLSERVICE) $(LBSERVICE) $(COMMONSERVICE) $(BASESERVICE)
+PROTOSRC=$(wildcard $(addsuffix /*.cc, $(PROTOPATH)))
+10、执行make clean时也出现问题了
+PHONY:clean
+    rm -f $(TARGET) src/*.o
+这样写，会显示无需做任何事
+
+.PHONY:clean
+
+clean:
+    rm -f $(TARGET) src/*.o
+
+到这基本上可以测功能了，在测之前上面的疑问还是第3个，，传参过程还是有点婚礼，其他的没啥问题
+下面是测功能的了
+10、测试获取ip之后发登录包的时候，发现阻塞在任务加锁那里了。。。。。。
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第1件事情]
+DEBUG:src/EventLoop.cpp->readMyData->line:106=[已被唤醒,主线程说：该起来干活了该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:112=[正在处理任务,当前一共有2个任务]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:115=[tasksProcess正在加锁]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:120=[tasksProcess解锁成功]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:6]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:157=[任务处理成功]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:115=[tasksProcess正在加锁]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:120=[tasksProcess解锁成功]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:6]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:157=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：4的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processRead->line:40=[正在读fd：6发来的消息并解析]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:311=[当前Buf的情况为：，当前读指针：0，当前写指针：0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：65535,需要扩容的大小：65527]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:317=[读到socket的数据大小为：29,当前Buf的情况为：，当前读指针：0，当前写指针：29]
+DEBUG:src/Udp.cpp->processRead->line:44=[正在解析数据]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:29]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:25]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:2, this->m_msglen:21]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：8，读缓冲区的写指针为：29]
+DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为 
+
+                                                                127.0.0.1：21]
+DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：29，读缓冲区的写指针为：29]
+DEBUG:src/Message.cpp->analyze->line:49=[当前数据解析成功,msgid：2，msglen：21，m_data 
+
+                                                                                                127.0.0.1
+
+                                                                                                           DEBUG:src/Message.cpp->analyze->line:50=[Response,读缓冲区的读指针为：29，读缓冲区的写指针为：29]
+DEBUG:src/MsgRouter.cpp->call->line:61=[当前业务序号：2]
+DEBUG:src/MsgRouter.cpp->call->line:69=[userData的地址：2207480]
+DEBUG:client.cpp->HandleServerIp->line:54=[requestType:1]
+基地址:
+ip:127.0.0.1    port:10011
+DEBUG:src/TcpClient.cpp->connectServer->line:43=[开始连接服务器]
+DEBUG:src/TcpClient.cpp->connectServer->line:57=[正在连接。。。EINPROGRESS]
+DEBUG:src/TcpClient.cpp->connectServer->line:59=[添加写事件任务]
+DEBUG:src/EventLoop.cpp->addTask->line:77=[addTask加锁]
+
+但是可以看到已经解锁了上一次
+//由于主子线程可能都会访问任务队列，所以需要加锁
+	Debug("addTask加锁");
+	m_mutex.lock();
+	m_tasks.push(task);
+	m_mutex.unlock();
+	Debug("addTask解锁");
+	if (m_threadID == std::this_thread::get_id()) {
+		tasksProcess();
+
+测试程序：
+	baseClient->changeServer(responseData.host(0).ip().data(), responseData.host(0).port());
+	//连接server
+	baseClient->connectServer();  //不对，必须要先连接，再运行，否则connectServer添加完任务，baseClient还是一直阻塞在wait上
+
+然后用gdb调试会出现线程在随意的一个点退出，我尝试了其他的lb服务器，也是一样的
+都会在莫名其妙的地方退出（猜测是休眠的时候就退出）
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/EventLoop.cpp->EventLoop->line:31=[evLoop初始化完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+[New Thread 0x7ffff0a1c700 (LWP 37315)]
+epoll_wait==-1: Interrupted system call
+DEBUG:src/Thread.cpp->working->line:40=[threadheadle开始工作]
+DEBUG:src/EventLoop.cpp->EventLoop->line:11=[开始初始化evLoop]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:108=[正在处理任务,当前一共有1个任务]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:117=[正在添加fd：12到反应堆：2]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:46=[epoll成功添加读事件fd:12]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/EventLoop.cpp->EventLoop->line:31=[evLoop初始化完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+[Thread 0x7ffff0a1c700 (LWP 37315) exited]
+[Thread 0x7ffff121d700 (LWP 37314) exited]
+[Thread 0x7ffff1a1e700 (LWP 37313) exited]
+[Thread 0x7ffff2a20700 (LWP 37311) exited]
+[Thread 0x7ffff7fdd780 (LWP 37266) exited]
+[Inferior 1 (process 37266) exited normally]
+但是我在关注程序为啥卡住在添加任务上时，发现了一个很狗血的错误
+
+//mediaClient->addMsgRouter((int)lbService::ID_GetServerResponse, HandleServerIp, mediaClient);
+		mediaClient->addMsgRouter((int)lbService::ID_GetServerResponse, HandleServerIp, baseClient);
+	}
+	void run() {
+		std::thread baseClientRunner(&TcpClient::run, baseClient);
+		std::thread mediaClientRunner(&UdpClient::run, mediaClient);
+
+第一行注销的那个传递的是mediaClient而不是基础服务器。。。。。。。。改成baseClient就可以了，但是为啥使用mediaClient就会阻塞呢，执行打印逻辑发现确实是在等待锁可以用
+78              m_mutex.lock();
+__gthread_mutex_lock (__mutex=0x644ad0) at /usr/include/c++/4.8.2/x86_64-redhat-linux/bits/gthr-default.h:748
+748         return __gthrw_(pthread_mutex_lock) (__mutex);
+__GI___pthread_mutex_lock (mutex=0x644ad0) at ../nptl/pthread_mutex_lock.c:65
+65        unsigned int type = PTHREAD_MUTEX_TYPE_ELISION (mutex);
+62      {
+65        unsigned int type = PTHREAD_MUTEX_TYPE_ELISION (mutex);
+67        LIBC_PROBE (mutex_entry, 1, mutex);
+69        if (__builtin_expect (type & ~(PTHREAD_MUTEX_KIND_MASK_NP
+71          return __pthread_mutex_lock_full (mutex);
+__pthread_mutex_lock_full (mutex=0x644ad0) at ../nptl/pthread_mutex_lock.c:172
+172     {
+174       pid_t id = THREAD_GETMEM (THREAD_SELF, tid);
+176       switch (PTHREAD_MUTEX_TYPE (mutex))
+182           THREAD_SETMEM (THREAD_SELF, robust_head.list_op_pending,
+314               lll_futex_wait (&mutex->__data.__lock, oldval,
+188           oldval = mutex->__data.__lock;
+314               lll_futex_wait (&mutex->__data.__lock, oldval,
+196           unsigned int assume_other_futex_waiters = LLL_ROBUST_MUTEX_LOCK_MODIFIER;
+201               if (__glibc_likely (oldval == 0))
+210               if ((oldval & FUTEX_OWNER_DIED) != 0)
+259               if (__builtin_expect ((oldval & FUTEX_TID_MASK) == id, 0))
+294               if ((oldval & FUTEX_WAITERS) == 0)
+296                   if (atomic_compare_and_exchange_bool_acq (&mutex->__data.__lock,
+304                   oldval |= FUTEX_WAITERS;
+296                   if (atomic_compare_and_exchange_bool_acq (&mutex->__data.__lock,
+314               lll_futex_wait (&mutex->__data.__lock, oldval,
+到314行就阻塞了，这就很诡异了
+初步怀疑，是强转之后，导致获取的mutex错位了（因为udp和tcp类的布局不太一致），导致加锁不成功
+这个bug算是解决了。。。。
+11、第一个客户端可以获取ip成功，第二个客户端就不行了，客户端打印结果是
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：4的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processRead->line:40=[正在读fd：6发来的消息并解析]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:311=[当前Buf的情况为：，当前读指针：0，当前写指针：0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：65535,需要扩容的大小：65527]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:317=[读到socket的数据大小为：13,当前Buf的情况为：，当前读指针：0，当前写指针：13]
+DEBUG:src/Udp.cpp->processRead->line:44=[正在解析数据]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:13]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:9]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:2, this->m_msglen:5]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：8，读缓冲区的写指针为：13]
+DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为 ：5]
+DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：13，读缓冲区的写指针为：13]
+DEBUG:src/Message.cpp->analyze->line:49=[当前数据解析成功,msgid：2，msglen：5，m_data 
+
+                                                                                         DEBUG:src/Message.cpp->analyze->line:50=[Response,读缓冲区的读指针为：13，读缓冲区的写指针为：13]
+DEBUG:src/MsgRouter.cpp->call->line:61=[当前业务序号：2]
+DEBUG:src/MsgRouter.cpp->call->line:69=[userData的地址：9fd9a0]
+DEBUG:client.cpp->HandleServerIp->line:54=[requestType:1]
+基地址:
+[libprotobuf FATAL /usr/local/include/google/protobuf/repeated_field.h:1761] CHECK failed: (index) < (current_size_): 
+terminate called after throwing an instance of 'google::protobuf::FatalException'
+  what():  CHECK failed: (index) < (current_size_): 
+已放弃(吐核)
+[tony@heihei baseServerV0.1]$ 
+发现是lb服务器根本没有返回结果
+打印发现
+DEBUG:src/LbAgent.cpp->returnBaseServer->line:251=[返回基础服务器IP之后，routerMap情况：]
+key_set.second.size():%d2
+ip:127.0.0.1    port:10010      serviceCondition:1
+ip:127.0.0.1    port:10011      serviceCondition:1
+key_set.second.size():%d2
+ip:127.0.0.1    port:11001      serviceCondition:0
+ip:127.0.0.1    port:11000      serviceCondition:0
+DEBUG:src/LbAgent.cpp->returnBaseServer->line:267=[分配的基础服务器个数：0]
+数量更新了，但实际上啥都没有返回，发现问题了
+	if (user_ServerMap.find(uid) == user_ServerMap.end()) {  //当前user没有这个用户记录，我才给你uid
+需要 uid不同才给ip，但是更新好像不太一致，需要把serviceCondition:1也放在一起判断，并且更新map的也在这个if里进行，因为只有进到里面，我才认为需要返回ip从而更新map
+另一个就是客户端接收不到ip就直接崩溃了，这显然不应该，所以需要改正一些
+switch (responseType) {
+	case 1:  //得到基地址
+		if (responseData.host_size() == 0) {
+			std::cout << "获取服务器失败" << std::endl;
+			return;
+		}
+这样就可以了，不过测试程序的id应该 不同
+
+12、使用一个未注册的uid发送登录请求的时候，basseServer直接崩了
+EBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为 1234,大小为：9]
+DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：17，读缓冲区的写指针为：17]
+DEBUG:src/Message.cpp->analyze->line:29=[当前数据解析成功,msgid：1，msglen：9，m_data 1234 ]
+DEBUG:src/Message.cpp->analyze->line:30=[Response,读缓冲区的读指针为：17，读缓冲区的写指针为：17]
+DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：1]
+DEBUG:src/MsgRouter.cpp->call->line:32=[userData的地址：0]
+DEBUG:src/BaseServer.cpp->parseRequest->line:529=[requestHandle开始执行]
+baseServer: src/BaseServer.cpp:167: void BaseServer::handleLoginStep1(NetConnection*, void*): Assertion `uid_conn.find(requestData->uid()) == uid_conn.end()' failed.
+已放弃(吐核)
+是因为下面这一句
+	assert(uid_conn.find(requestData->uid()) == uid_conn.end());
+但是我打印重新编译之后，发现一切正常了，而且数量为0
+EBUG:src/Message.cpp->analyze->line:29=[当前数据解析成功,msgid：1，msglen：9，m_data 1234 ]
+DEBUG:src/Message.cpp->analyze->line:30=[Response,读缓冲区的读指针为：17，读缓冲区的写指针为：17]
+DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：1]
+DEBUG:src/MsgRouter.cpp->call->line:32=[userData的地址：0]
+DEBUG:src/BaseServer.cpp->parseRequest->line:534=[requestHandle开始执行]
+DEBUG:src/BaseServer.cpp->handleLoginStep1->line:167=[uid_conn的大小：0]
+DEBUG:src/BaseServer.cpp->handleLoginStep1->line:168=[当前用户uid情况：]
+DEBUG:src/BaseServer.cpp->packageMsg->line:550=[requestHandle开始回复数据]
+DEBUG:src/MsgRouter.cpp->call->line:34=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：21的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+
+猜想是之前这个server缓存的有这个id的信息，然后重新执行之后，就没了，然后正常了
+但是发现不能给mysql发消息，发现是
+if (packageMsg<NetConnection, Response_T>(conn, responseData, responseID)) {
+		Debug("tcpSendMsg已经打包数据完成，准备执行发送函数");
+		conn->sendMsg();
+	}
+不能进入if。。。。
+发现是	addHandleFunc<TcpServer, NetConnection, baseService::LoginRequest>(tcpServer, &BaseServer::handleLoginStep1, (int)baseService::ID_LoginRequest);这里没有指定发送的id，并且里面发送的时候	tcpSendMsg<mysqlService::GetUserBaseRequest>(mysqlClient, &GetUserBaseData);也是没有指定id，当然就false了
+增加一个默认id即可，然后udp和tcp发送的时候如果为-1，提示一下，然后丢弃该包
+但是发现了一个很尴尬的事情，就是我记录的时候是使用接收的类型进行记录的，但是我发送数据的时候 提供的是发送的类型，导致发送的时候永远返回的是-1，设计的结构有问题，需要重新设计。。。
+可以考虑元编程，模板参数可以有任意个，然后后面的模板就是一个类型对应一个id，这样的话，就可以保证发送的时候完全不需要管id的事情，注册的时候一次注册完即可
+找到了一种好方法，就是可变个数模板和initializer_list可以完美解决这个问题
+
+template<class Server_T, class Conn_T, class RecvMsg_T>
+bool BaseServer::addHandleFunc(Server_T* server, void(BaseServer::* func)(Conn_T*, void*), int recvId, int sendId) {
+	if (!msgIdRecoder->setIdentifier<RecvMsg_T>(recvId, sendId)) {
+		return false;
+	}
+	server->addMsgRouter(msgIdRecoder->getRecvId<RecvMsg_T>(),
+		std::bind(func, this, std::placeholders::_1, std::placeholders::_2));
+	return true;
+}
+改成
+注意，由于函数模板不支持部分特化，需要改成类模板，然后使用部分特化，为什么要部分特化呢，因为需要递归的遍历变长参数
+
+函数的变长部分怎么办，一开始想的是在BaseServer::addHandleFunc遍历，这显然不可能（完全没考虑模板参数的展开问题），模板参数展开经典方法还是递归，但是函数参数怎么办呢，想的是递归，也就是这里模板参数递归一层，函数参数也递归一层，后面想着怎么一层一层构造initializer_list的时候发现可以只传递开始和结束，类似于下面
+#include <iostream>
+#include <algorithm>
+void printIninializerList(std::initializer_list<int>::iterator start, std::initializer_list<int>::iterator end){
+	std::for_each(start, end, [](int x){
+		std::cout << x << '\t';
+	});
+	std::cout <<std::endl;
+	if(start == end){
+		return;
+	}else{
+		auto it = start;
+		++it;
+		printIninializerList(it, end);
+	}
+}
+
+int main()
+{
+	std::initializer_list<int> list ({1,2,3,4,5,6,7,8,9});
+	printIninializerList(list.begin(), list.end());
+   return 0;
+}
+但是这样的话，我上层就不能这样调用了
+addHandleFunc<TcpServer, NetConnection, baseService::LoginRequest, mysqlService::GetUserBaseRequest>(tcpServer, &BaseServer::handleLoginStep1,
+		{ (int)baseService::ID_LoginRequest, (int)mysqlService::ID_GetUserBaseRequest });
+为了实现这样简单的调用，参数必须是std::initializer_list<int> msgId，那递归的时候该咋办呢，能不能在模板参数递归的时候，函数使用begin()+n访问第n个值呢？？？这个n怎么指定，需要一个全局变量，或者是改成类，增加一个类属性（或者是在baseServer增加一个类属性）。而且发现如果是递归展开的话，如果还携带固定参数的那种，其实是没法展开的，因为在递归展开的时候，因为需要一个特定的模板参数接收解开的参数包。。。。但是我理解错了，是可以解开的，之前编译错误是因为template<class Arg1,class Arg, class... Args>，我没有给Args留一个解参数之后的变量Arg，而是<class Arg1，lass... Args>但是调用的时候又是这种printTemplateArgs<std::string, Args...>(name, list);，导致解出来的包和传进去的包冲突出现这种错误
+
+run: line 1:     3 Segmentation fault      (core dumped) LD_LIBRARY_PATH=/usr/local/gcc-9.2.0/lib64 ./a.out
+
+Exited with error status 139
+后面想着增加一个接收参数，但是调用的时候没有想着忽略这个参数，能编译过，但是。。。。。
+输出的全是
+i
+i
+i
+i
+i
+i
+直到内存溢出，段错误，就是编译期死循环展开的那种
+当时还尝试了，
+template<class Arg1,  class... Args,class Arg>
+void printTemplateArgs(std::string name, std::initializer_list<int> list){
+        std::cout << typeid(Arg1).name() << std::endl;
+        int i = 0;
+        printTemplateArgs<Arg1, Args...>(name, list);
+       // int array[] = {(printTemplateArgs<Args>(i++, list),0)...};
+因为 想着模板参数最后一个可以自动推导，但是忘记会根据实参列表进行推导，导致推断错误
+main.cpp: In function ‘int main()’:
+main.cpp:21:90: error: no matching function for call to ‘printTemplateArgs<std::string, int, double, float, bool, char, short int>(const char [5], std::initializer_list<int>&)’
+   21 |         printTemplateArgs<std::string, int, double, float, bool, char, short>("test",list);
+      |                                                                                          ^
+main.cpp:6:6: note: candidate: ‘template<class T> void printTemplateArgs(std::string, std::initializer_list<int>)’
+    6 | void printTemplateArgs(std::string name, std::initializer_list<int> list){
+      |      ^~~~~~~~~~~~~~~~~
+main.cpp:6:6: note:   template argument deduction/substitution failed:
+main.cpp:21:90: error: wrong number of template arguments (7, should be 1)
+   21 |         printTemplateArgs<std::string, int, double, float, bool, char, short>("test",list);
+      |                                                                                          ^
+main.cpp:11:6: note: candidate: ‘template<class Arg1, class ... Args, class Arg> void printTemplateArgs(std::string, std::initializer_list<int>)’
+   11 | void printTemplateArgs(std::string name, std::initializer_list<int> list){
+      |      ^~~~~~~~~~~~~~~~~
+main.cpp:11:6: note:   template argument deduction/substitution failed:
+main.cpp:21:90: note:   couldn’t deduce template parameter ‘Arg’
+   21 |         printTemplateArgs<std::string, int, double, float, bool, char, short>("test",list);
+后面想着这种方法行不通，不可能通过递归推导出，然后看了primer里面的实参推导的案例，提供了3个实参，但是调用的时候传递了两个实参，我想着参数列表不行吗，结果一 尝试还真行
+
+#include <iostream>
+#include <typeinfo>
+#include <initializer_list>
+
+template<class T>
+void printTemplateArgs(std::string name, std::initializer_list<int> list){
+        std::cout << *(list.begin()) <<std::endl;
+}
+
+template<class Arg1,class Arg, class... Args>
+void printTemplateArgs(std::string name, std::initializer_list<int> list){
+        std::cout << typeid(Arg).name() << std::endl;
+        int i = 0;
+        printTemplateArgs<std::string, Args...>(name, list);
+       // int array[] = {(printTemplateArgs<Args>(i++, list),0)...};
+}
+
+int main()
+{
+        std::initializer_list<int> list = {1,2,3,4,5,6};
+        printTemplateArgs<std::string, int, double, float, bool, char, short>("test",list);
+}
+注意 std::initializer_list<int> 的初始化方式，可以通过 =, std::initializer_list<int> list(list1) ,参数列表初始化，cpp参考网页 只说空构造和 参数列表，并且上述构造方法无需担心效率问题，他们都是引用 的方式，也就是原始数据只有一份，所以不要考虑传迭代器类型了，也不要想着怎么递归展开 参数模板的时候怎么展开参数列表了，要么就如上面说的定义外部变量，然后传递整个list，要么就是在递归的时候重新构造一个list（2，end），然后传递这个 新的list
+
+后面 在网上看到了一种新的展开的方式。。。使用 逗号表达式，这个更好用，完全不需要其他特化，外部定义变量什么的，特别好用，所以我打算使用下面这种
+
+关于这部分的内容看了很多，在ipad上的alook上
+
+#include <iostream>
+#include <typeinfo>
+#include <initializer_list>
+
+template<class T>
+void printTemplateArgs(int index, std::initializer_list<int> list){
+	std::cout << typeid(T).name() << *(list.begin()+index) <<std::endl;
+}
+
+template<class Arg1,  class... Args>
+void printTemplateArgs(std::string name, std::initializer_list<int> list){
+	std::cout << typeid(Arg1).name() << name << std::endl;
+	int i = 0;
+	int array[] = {(printTemplateArgs<Args>(i++, list),0)...};
+}
+
+int main()
+{
+	std::initializer_list<int> list = {1,2,3,4,5,6};
+	printTemplateArgs<std::string, int, double, float, bool, char, short>("test",list);
+}
+
+特别注意，虽然initializer_list的元素只是引用，也就是元素数据丢失，那么这个list也就不能使用了，那么对于recoder有影响吗，没有的，因为尽管BaseServer构造函数执行完后，即使原始数据丢失，但是我的recoder里面的tuple早就拷贝了相关的信息，所以不用管initializer_list元素引用的问题
+增加一个负责处理各个类型的处理函数
+template<class Server_T, class MsgType>
+bool BaseServer::recordMsgType(Server_T* server, int index, std::initializer_list<int> msgIdList) {
+	msgIdRecoder->setIdentifier<MsgType>(*(msgIdList.begin()+index))
+	if (index == 0) {
+		server->addMsgRouter(msgIdRecoder->getRecvId<MsgType>(),
+			std::bind(func, this, std::placeholders::_1, std::placeholders::_2));
+	}
+}
+
+然后原来的BaseServer::addHandleFunc改成
+template<class Server_T, class Conn_T, class... Args>
+bool BaseServer::addHandleFunc(Server_T* server, void(BaseServer::* func)(Conn_T*, void*), std::initializer_list<int> msgIdList) {
+	int index = 0;
+	int array[] = {(recordMsgType<Server_T, Args>(server, index++, msgIdList),0)...};
+	return true;
+}
+
+发现上面这个会传递很多无用的参数，包括func和Server_T，这里就把第一个单独拎出来调用，后面的再调用array。。。。。
+
+但是写的过程中发现
+recordMsgType<Server_T, Args>(server, index++, msgIdList), 0;
+int array[] = {(recordMsgType<Args>(index++, msgIdList),0)...};
+第一句是会出错的，因为展开需要配合...一展开就全展开了，可以考虑这样写：
+int array[] = {(index==0 ? recordMsgType<Server_T, Args>(server, index++, msgIdList): recordMsgType<Args>(index++, msgIdList),0)...};
+最终是这样的
+template<class MsgType>
+bool BaseServer::recordMsgType(int index, std::initializer_list<int> msgIdList) {
+	msgIdRecoder->setIdentifier<MsgType>(*(msgIdList.begin() + index));
+}
+
+template<class Server_T, class Conn_T, class MsgType>
+bool BaseServer::recordMsgType(Server_T* server, void(BaseServer::* func)(Conn_T*, void*), int index, std::initializer_list<int> msgIdList) {
+	recordMsgType<MsgType>(index, msgIdList);
+	server->addMsgRouter(msgIdRecoder->getMsgId<MsgType>(),
+		std::bind(func, this, std::placeholders::_1, std::placeholders::_2));
+}
+
+//构造函数中，那两个注册和记录的密密麻麻的太费事了，这里直接封装一个类模板吧
+//C++11支持默认类型参数，这个很重要
+//不管是Tcp还是udp注册类型都是void(*func)(NetConnection*, void*)
+//关于下面的实现改进见主要bug12
+template<class Server_T, class Conn_T, class... Args>
+bool BaseServer::addHandleFunc(Server_T* server, void(BaseServer::* func)(Conn_T*, void*), std::initializer_list<int> msgIdList) {
+	int index = 0;
+	int array[] = {(index==0 ? recordMsgType<Server_T,Conn_T, Args>(server,func, index++, msgIdList): recordMsgType<Args>(index++, msgIdList),0)...};
+	return true;
+}
+
+删除
+//注意之所以增加下面两个类，是因为接收、发送id和类型是强关联的，所以注册的时候可以指定指定接收id和默认发送id
+//另一个重要的原因是在操作获取喜欢朋友组列表时需要进行类型判断然后决定发送id是什么这也是为啥增加这两个类的原因
+struct RecvSendId {
+public:
+	RecvSendId() {}
+	RecvSendId(int recvId, int sendId) {
+		m_recvId = recvId;
+		m_sendId = sendId;
+	}
+	int m_recvId;
+	int m_sendId;
+};
+
+class TypeIdentifier {
+public:
+	TypeIdentifier() {
+		m_typeIdentifier.clear();  //甚至这一步都不需要做
+	}
+
+	//获得RecvId
+	template <typename type>
+	int getRecvId() {
+		//注意type_index对象是基于typeid(T)返回的type_info引用，然后进行匿名构造产生的type_index对象，然后find会进行比较（type_index里面有==）
+		//当然也可以显示的type_index（typeid(T)）也行
+		//但是type_index是个匿名对象，这就牵扯到m_typeIdentifier[]时插入的是副本，还是这个值本身了
+		//不用担心，找到了这个https://noerror.net/zh/cpp/container/unordered_map/operator_at.html，里面有T& operator[]( const Key& key );
+		//和T& operator[]( Key&& key );
+		auto it = m_typeIdentifier.find(typeid(type));
+		if (it != m_typeIdentifier.end()) {
+			return it->second.m_recvId;  //迭代器要使用->，这都忘记了。。。
+		}
+		return -1; //不存在就返回-1
+	}
+
+	template <typename type>
+	int getMsgId() {
+		auto it = m_typeIdentifier.find(typeid(type));
+		if (it != m_typeIdentifier.end()) {
+			return it->second.m_sendId;  
+		}
+		return -1; //不存在就返回-1
+	}
+
+	//设置标志值
+	//不过有些函数在收到消息后是不需要发送消息的，所以sendId可以为一个特定值-1，代表sendId不存在
+	template <typename type>
+	bool setIdentifier(int recvId, int sendId=-1) {
+		auto it = m_typeIdentifier.find(typeid(type));
+		if (it != m_typeIdentifier.end()) {
+			std::cout << "已经为该类型设置标志" << std::endl;
+			return false;
+		}
+		//将该类型和对应关系记录下来
+		m_typeIdentifier[typeid(type)] = RecvSendId(recvId, sendId);  //注意typeid(T)
+		std::cout <<"已记录，"<< "recvId：" << m_typeIdentifier[typeid(type)].m_recvId
+			<<"\tsendId：" << m_typeIdentifier[typeid(type)].m_sendId << std::endl;
+		//为该类型注册函数
+		//这个注册逻辑只能在外面操作，因为你根本不知道函数是谁，难道还要传进来？
+		return true;
+	}
+private:
+	//注意，unordered_map本身是需要提供hash函数和operator==来工作的，但是std::type_index这个类本身有operator==和hash_code函数，所以可以显示指定
+	//这个是参考了网上的unordered_map的使用案例（两种方式指定那两个函数）和cppreference.com里关于type_index的使用总结出来的
+	//注意这里为啥使用unordered_map，因为查询时o(1)而map是o(logn)，还有就是之前已经使用过map了，这里想体验一下这个函数
+	//type_index是对type_info的一层包装，而typeid返回的是type_info的对象
+	std::unordered_map<std::type_index, RecvSendId> m_typeIdentifier;
+};
+
+这个改成
+class TypeIdentifier {
+public:
+	TypeIdentifier() {
+		m_typeIdentifier.clear();  //甚至这一步都不需要做
+	}
+
+	//获得RecvId
+	template <typename type>
+	int getMsgId() {
+		//注意type_index对象是基于typeid(T)返回的type_info引用，然后进行匿名构造产生的type_index对象，然后find会进行比较（type_index里面有==）
+		//当然也可以显示的type_index（typeid(T)）也行
+		//但是type_index是个匿名对象，这就牵扯到m_typeIdentifier[]时插入的是副本，还是这个值本身了
+		//不用担心，找到了这个https://noerror.net/zh/cpp/container/unordered_map/operator_at.html，里面有T& operator[]( const Key& key );
+		//和T& operator[]( Key&& key );
+		auto it = m_typeIdentifier.find(typeid(type));
+		if (it != m_typeIdentifier.end()) {
+			return it->second;  //迭代器要使用->，这都忘记了。。。
+		}
+		return -1; //不存在就返回-1
+	}
+
+	//设置标志值
+	//不过有些函数在收到消息后是不需要发送消息的，所以sendId可以为一个特定值-1，代表sendId不存在
+	template <typename type>
+	bool setIdentifier(int msgId) {
+		auto it = m_typeIdentifier.find(typeid(type));
+		if (it != m_typeIdentifier.end()) {
+			std::cout << "已经为该类型设置标志" << std::endl;
+			return false;
+		}
+		//将该类型和对应关系记录下来
+		m_typeIdentifier[typeid(type)] = msgId;  //注意typeid(T)
+		std::cout <<"已记录，"<< "msgId：" << m_typeIdentifier[typeid(type)] << std::endl;
+		//为该类型注册函数
+		//这个注册逻辑只能在外面操作，因为你根本不知道函数是谁，难道还要传进来？
+		return true;
+	}
+private:
+	//注意，unordered_map本身是需要提供hash函数和operator==来工作的，但是std::type_index这个类本身有operator==和hash_code函数，所以可以显示指定
+	//这个是参考了网上的unordered_map的使用案例（两种方式指定那两个函数）和cppreference.com里关于type_index的使用总结出来的
+	//注意这里为啥使用unordered_map，因为查询时o(1)而map是o(logn)，还有就是之前已经使用过map了，这里想体验一下这个函数
+	//type_index是对type_info的一层包装，而typeid返回的是type_info的对象
+	std::unordered_map<std::type_index, int> m_typeIdentifier;
+};
+
+13、在测试一个客户端使用未注册的uid登录tcp服务器，观察BaseServer执行handleLoginStep2是否符合预期的时候
+base服务器接收到mysql服务器的消息之后，发现不匹配，给lb服务器发消息之后，lb服务器直接崩掉了
+缓冲区的读指针为：27，读缓冲区的写指针为：27]
+DEBUG:src/MsgRouter.cpp->call->line:61=[当前业务序号：3]
+DEBUG:src/MsgRouter.cpp->call->line:69=[userData的地址：0]
+DEBUG:src/LbAgent.cpp->requestHandle->line:69=[requestHandle开始执行]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:294=[同步前当前user_server map情况：]
+uid:9527        server_ip:127.0.0.1     server_port:10011
+DEBUG:src/LbAgent.cpp->DealingRequest->line:306=[uid:9527登录失败]
+DEBUG:./include/LbAgent.h->operator==->line:183=[比较对象  ip:127.0.0.1 obj.ip: ; port:10010 obj.port:0; serviceCondition:0, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:183=[比较对象  ip:127.0.0.1 obj.ip: ; port:10011 obj.port:0; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:183=[比较对象  ip: obj.ip:127.0.0.1 ; port:0 obj.port:10011; serviceCondition:0, obj.serviceCondition:1]
+lbServer: src/LbAgent.cpp:495: void LbAgent::handleStopService(int): Assertion `targetIt != routerMap[1].end()' failed.
+大概是出在这：
+HostInfo host = user_ServerMap[uid];
+//routermap的人数减去1
+auto targetIt = routerMap[1].find(host);
+这里好像出问题了，因为两个map的比较规则不一致，导致使用user_ServerMap的host查找routerMap[1]的set在时就出现问题了，怎么搞
+好像不是那么回事。。。这里的ip和port都为空，，比较对象  ip:127.0.0.1 obj.ip: ; port:10010 obj.port:0; serviceCondition:0,
+妈的，是
+//删除uid和server的对应关系
+user_ServerMap.erase(targetUid);
+
+HostInfo host = user_ServerMap[uid];
+删除之后，我才去用，结果又重新插入了一遍，默认值为0和空字符串
+这是之前的
+if (user_ServerMap.find(targetUid) != user_ServerMap.end()) {
+	
+		//删除uid和server的对应关系
+		user_ServerMap.erase(targetUid);
+		//先取出对应的hostinfo
+		HostInfo host = user_ServerMap[targetUid];
+		//routermap的人数减去1
+		auto targetIt = routerMap[1].find(host);
+		assert(targetIt != routerMap[1].end());
+		auto targetServer = *targetIt;
+		targetServer.serviceCondition -= 1;
+
+		//不直接插入，先删除再插入
+		routerMap[1].erase(targetIt);
+		routerMap[1].insert(targetServer);
+		return true;
+	}
+改成下面的
+//先取出对应的hostinfo
+		HostInfo host = user_ServerMap[targetUid];
+		//删除uid和server的对应关系
+		user_ServerMap.erase(targetUid);
+		
+		//routermap的人数减去1
+		auto targetIt = routerMap[1].find(host);
+		assert(targetIt != routerMap[1].end());
+		auto targetServer = *targetIt;
+		targetServer.serviceCondition -= 1;
+lb服务器可以同步成功，但是引入了下一个问题，
+14、就是base服务器响应完直接退出了
+UG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树10有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:76=[正在关闭写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：0]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：13的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树10有2事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:76=[正在关闭写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：0]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：13的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第1件事情]
+DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有2个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:13]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:152=[任务处理成功]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:13]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:152=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：11的读事件响应完成]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+[tony@heihei bin]$ 
+然后通过屏蔽
+#if 0
+	if (loginResData.result() == -1) {
+		uid_conn.erase(userInfoData->uid());
+		//应该给关闭连接增加一个接口
+		conn->m_evloop->addTask(conn->m_evloop, conn->m_evloop->packageTask(conn->m_channel, TaskType::DEL));
+	}
+#endif
+这段代码，发现和这个有关
+前面会给这个conn发送一个包，而这里好像直接关闭了，会不会有影响，能发送成功吗，（不能，后面测试的时候，客户端收不到消息，可能需要强制发送一下）这个先不管
+（tmd，后面登录成功也没收到base服务器的消息，然后我看了一眼发送对象是tcpSendMsg<baseService::LoginResponse>(conn, &loginResData);mysql的conn，真无语，然后改成了如下
+auto targetPair = uid_conn.find(userInfoData->uid());
+	assert(targetPair != uid_conn.end());
+	auto targetConn = targetPair->second;
+	tcpSendMsg<baseService::LoginResponse>(targetConn, &loginResData);
+	//返回结果给负载均衡服务器告诉登录情况
+	udpSendMsg<lbService::ServerResonseToLb>(&responseDataToLb, &lbClient->m_recvAddr);
+	//如果登录失败，清理map，关掉当前连接
+	if (loginResData.result() == -1) {
+		//应该给关闭连接增加一个接口
+		targetConn->m_evloop->addTask(targetConn->m_evloop, targetConn->m_evloop->packageTask(targetConn->m_channel, TaskType::DEL));
+		uid_conn.erase(userInfoData->uid());
+	}
+改成这样之后，客户端登录失败之后，很大概率会导致服务器崩溃（尝试好几次都会崩溃，但是后面又没有崩溃）：
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：0]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：13的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[DEBUG:src/TcpConnection.cpp->destroy->line:58=[epoll_wait正在处理第1件事情客户端资源释放成功]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+]
+DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有2个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+baseServer: src/EventLoop.cpp:195: bool EventLoop::modifyChannel(Channel*): Assertion `m_channelMap.find(channel->m_fd) != m_channelMap.end()' failed.
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:13]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:13]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：11的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+已放弃(吐核)
+[tony@heihei bin]$ 
+可以看到客户端资源释放成功了，但是服务器依然要把刚刚删除的fd修改事件，导致断言失败。
+
+）
+
+
+conn->m_evloop->addTask(conn->m_evloop, conn->m_evloop->packageTask(conn->m_channel, TaskType::DEL));
+这一句删除的是mysql的连接呀，操了，然后发现为啥退出了
+bool TcpClient::destroy()
+{
+	//执行hook函数
+	if (connOnLost != nullptr) {
+		connOnLost(this, connOnLostArgs);
+	}
+	//可能一个客户端不止一个链接
+	//删除对应关系
+	this->m_evloop->m_channelMap.erase(m_channel->m_fd);
+	delete this;
+	exit(1);
+}
+执行完删除函数直接有一个exit。。。。。。
+改成如下：
+auto targetPair = uid_conn.find(userInfoData->uid());
+assert(targetPair != uid_conn.end());
+//应该给关闭连接增加一个接口
+auto targetConn = targetPair->second;
+targetConn->m_evloop->addTask(targetConn->m_evloop, targetConn->m_evloop->packageTask(targetConn->m_channel, TaskType::DEL));
+uid_conn.erase(userInfoData->uid());
+
+15、在测6、3个用户同时登录成功，然后第四个用户登录同一个id，第五个用户登录未注册的uid，观察BaseServer执行handleLoginStep2是否符合预期  登录第一个用户时，登录 成功之后，mysql服务器不回复给lb服务器表了，但是我发现是lb服务器在同步完第一个请求之后，不开启写事件了，因为lb服务器的writebuf一直在增加，这个bug不是一直出现的，发现是第一次请求表之后，开启写事件，第二次请求表发现里面有数据，没有开启写事件，然后这个时候提示刚链接到mysql。。。。。。。，然后连接完之后，会有一个关闭写事件的动作，然后导致后面的数据都被堵死了。有3种解决方法，第一个是lb服务器在run之前先睡眠一小会，或者使用同步变量保证能连接成功，然后再去请求，第二个方法是，sendMsg时如果应该开启0写事件，那么先判断是否开启了写事件，如果没开启，要确保开启，第三个方法是关闭写事件之前看看buf里面是否有数据，还有一种方法，但是写着写着就忘了，暂时先采取前两种方法优化一下（第一种延迟）
+这是对应的日志：
+DEBUG:src/Buffer.cpp->resizeBuffer->line:66=[扩充Buf大小为两倍]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:72=[Buf的大小为：10]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[DEBUG:src/TcpClient.cpp->connected->line:90=[当前大小：6,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:66=[扩充Buf大小为两倍]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:72=[Buf的大小为：14]
+DEBUG:src/NetConnection.cpp->sendMsg->line:131=[当前即将写的写缓冲区的内存情况为：m_readPos：0，m_writePos：10，getReadSize()：10，getWriteSize()：4，data：]
+DEBUG:src/NetConnection.cpp->sendMsg->line:137=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+DEBUG:src/LbAgent.cpp->planUpdateRouter->line:107=[正在请求第二张表]
+DEBUG:src/LbAgent.cpp->packageMsg->line:521=[requestHandle开始回复数据]
+DEBUG:src/NetConnection.cpp->sendMsg->line:92=[正在执行SendMsg]
+DEBUG:src/NetConnection.cpp->sendMsg->line:97=[本次发送数据，是否激活写事件：0]
+DEBUG:src/NetConnection.cpp->sendMsg->line:116=[当前的数据为:1,2]
+DEBUG:src/NetConnection.cpp->sendMsg->line:117=[m_wbuffer->getReadSize():10]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:66=[扩充Buf大小为两倍]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:72=[Buf的大小为：22]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[已连接到127.0.0.1:10000]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：10的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树7有2事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/NetConnection.cpp->processWrite->line:57=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:380=[本次写到socket的字节数为：14]
+DEBUG:src/NetConnection.cpp->processWrite->line:79=[本次发送的字节大小为：14]
+DEBUG:src/NetConnection.cpp->processWrite->line:83=[正在关闭写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：10的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第1件事情]
+DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了该起来干活了该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有3个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:10]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:10]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:10]
+，注意休眠还要选好位置，不能这样休眠
+//这里先休眠5秒，保证tcpClient->connectServer();能够连接成功
+	//否则会有很小概率导致一直发包不成功，这个bug已在base服务器的bug里记录了
+	std::this_thread::sleep_for(std::chrono::seconds(5));
+
+	//线程2启动udpserver
+	//std::thread startUdp(&LbAgent::udpServer::run, udpServer);
+	// std::thread startUdp(udpServer->run, udpServer);
+	// std::thread startUdp(&LbAgent::udpServer->run, udpServer);上面这些全都不对，第一个参数应该是一个类的成员函数，第二个应该是个对象
+	std::thread startUdp(&UdpServer::run, udpServer);
+	//线程3启动tcpserver
+	std::thread startTcp(&TcpClient::run, tcpClient);
+而是要把休眠事件放到tcpClient);后面，否则会和设想的不一致，也就是休眠之后又回去关闭写事件 
+
+16、在测试6、3个用户同时登录成功，然后第四个用户登录同一个id，第五个用户登录未注册的uid，观察BaseServer执行handleLoginStep2是否符合预期的时候，登录第二个账号之后，lb服务器没有同步
+而且更搞笑的是第二个用户uid正确，密码错误的情况下
+                       127.0.0.1]
+DEBUG:src/Message.cpp->analyze->line:30=[Response,读缓冲区的读指针为：42，读缓冲区的写指针为：84]
+DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：2]
+DEBUG:src/MsgRouter.cpp->call->line:32=[userData的地址：0]
+DEBUG:src/LbAgent.cpp->requestHandle->line:76=[requestHandle开始执行]
+===========
+当前收到：
+modid:1
+ip:127.0.0.1    port:10010
+ip:127.0.0.1    port:10011
+当前Map：
+routerMap.size():%d2
+key_set.second.size():%d2
+ip:127.0.0.1    port:10010      serviceCondition:-1
+ip:127.0.0.1    port:10011      serviceCondition:1
+key_set.second.size():%d2
+ip:127.0.0.1    port:11001      serviceCondition:0
+ip:127.0.0.1    port:11000      serviceCondition:0
+竟然还出现了一个-1
+tmd终于发现了罪魁祸首了
+第二个用户登录成功之后
+if (user_ServerMap.find(uid) == user_ServerMap.end()) {  //当前user没有这个用户记录，我才给你uid
+		//对这个target人数+1，然后重新加入到routerMap中去，然后将这个加入到user_ServerMap中，注意这个时候user_ServerMap后面的serverCondition就停止更新了
+		targetServer.serviceCondition += 1;
+
+		//不直接插入，先删除再插入
+		routerMap[1].erase(targetIt);
+		routerMap[1].insert(targetServer);
+		assert(routerMap[1].size() != 0); //你连个基础服务器都没用，你还能干啥
+		
+		//Debug("*routerMap[1].begin()信息：%s, %d", routerMap[1].begin()->ip.data(), routerMap[1].begin()->port);
+		hosts.push_back(targetServer);
+		//将这个服务器的地址加到对应的user_ServerMap上去
+		user_ServerMap[uid] = hosts[0];
+		//将这个用户的状态进行更新，不能在这更新，因为还没有登录验证，这个更新应该是基础服务器做的
+	}
+确实进入了这个if里面，
+1, obj.serviceCondition:1]
+DEBUG:src/LbAgent.cpp->returnBaseServer->line:269=[返回基础服务器IP之后，routerMap情况：]
+key_set.second.size():%d2
+ip:127.0.0.1    port:10010      serviceCondition:1
+ip:127.0.0.1    port:10011      serviceCondition:1
+key_set.second.size():%d2
+ip:127.0.0.1    port:11001      serviceCondition:0
+ip:127.0.0.1    port:11000      serviceCondition:0
+DEBUG:src/LbAgent.cpp->returnBaseServer->line:277=[分配的基础服务器个数：1]
+DEBUG:src/LbAgent.cpp->getServerResponse->line:289=[返回的地址详情：[127.0.0.1:10010]]
+DEBUG:src/LbAgent.cpp->packageMsg->line:529=[requestHandle开始回复数据]
+。也分配了服务器，并且登录成功，但是定期获取ip表的函数第一次（modid=1）获取基础服务器的表，更新没问题，但是第二次更新modid=1的时候，就把第二个用户登录所在的 serviceCondition:1改成1了，注意第一次同步时没有问题的
+下面是日志
+第一次的更新
+当前收到：
+modid:1
+ip:127.0.0.1    port:10010
+ip:127.0.0.1    port:10011
+当前Map：
+routerMap.size():%d2
+key_set.second.size():%d2
+ip:127.0.0.1    port:10010      serviceCondition:1
+ip:127.0.0.1    port:10011      serviceCondition:1
+key_set.second.size():%d2
+ip:127.0.0.1    port:11001      serviceCondition:0
+ip:127.0.0.1    port:11000      serviceCondition:0
+responseData->host_size():2
+DEBUG:src/LbAgent.cpp->DealingRequest->line:154=[DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10010; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10010; serviceCondition:0, obj.serviceCondition:1]
+当前routerMap中是否有当前server，1]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10010; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10010; serviceCondition:0, obj.serviceCondition:1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:158=[正在给serviceCondition还原数据]
+插入host.ip：127.0.0.1host.port：10010host.serviceCondition：1
+插入结果flags：1
+DEBUG:src/LbAgent.cpp->DealingRequest->line:154=[DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+当前routerMap中是否有当前server，1]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:158=[正在给serviceCondition还原数据]
+插入host.ip：127.0.0.1host.port：10011host.serviceCondition：1
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:1]
+插入结果flags：1
+DEBUG:src/LbAgent.cpp->DealingRequest->line:169=[DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+routerMap[modid] != tempRouterMap[modid]:1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:170=[routerMap.find(modid) == routerMap.end():0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:174=[正在交换routerMap和tempRouterMap]
+===========
+更新后Map：
+routerMap.size():%d2
+key_set.second.size():%d2
+ip:127.0.0.1    port:10011      serviceCondition:1
+ip:127.0.0.1    port:10010      serviceCondition:1
+key_set.second.size():%d2
+ip:127.0.0.1    port:11001      serviceCondition:0
+ip:127.0.0.1    port:11000      serviceCondition:0
+
+
+
+
+第二次的更新：
+modid:1
+ip:127.0.0.1    port:10010
+ip:127.0.0.1    port:10011
+当前Map：
+routerMap.size():%d2
+key_set.second.size():%d2
+ip:127.0.0.1    port:10011      serviceCondition:1
+ip:127.0.0.1    port:10010      serviceCondition:1
+key_set.second.size():%d2
+ip:127.0.0.1    port:11001      serviceCondition:0
+ip:127.0.0.1    port:11000      serviceCondition:0
+responseData->host_size():2
+DEBUG:src/LbAgent.cpp->DealingRequest->line:154=[DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10010; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10011; serviceCondition:0, obj.serviceCondition:1]
+当前routerMap中是否有当前server，0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10010; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10011; serviceCondition:0, obj.serviceCondition:1]
+插入host.ip：127.0.0.1host.port：10010host.serviceCondition：0
+插入结果flags：1
+DEBUG:src/LbAgent.cpp->DealingRequest->line:154=[DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10011; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:0, obj.serviceCondition:1]
+当前routerMap中是否有当前server，1]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10011; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:0, obj.serviceCondition:1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:158=[正在给serviceCondition还原数据]
+插入host.ip：127.0.0.1host.port：10011host.serviceCondition：1
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10011; serviceCondition:0, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:0]
+插入结果flags：1
+DEBUG:src/LbAgent.cpp->DealingRequest->line:169=[DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:0]
+routerMap[modid] != tempRouterMap[modid]:1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:170=[routerMap.find(modid) == routerMap.end():0]
+DEBUG:./include/LbAgent.h->operator==->line:184=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:174=[正在交换routerMap和tempRouterMap]
+===========
+更新后Map：
+routerMap.size():%d2
+key_set.second.size():%d2
+ip:127.0.0.1    port:10010      serviceCondition:0
+ip:127.0.0.1    port:10011      serviceCondition:1
+可以很清楚的看到是使用find查找的时候，找不到对应的server，也就是ip:127.0.0.1    port:10010  serviceCondition:0 和 ip:127.0.0.1    port:10011      serviceCondition:1如果不对，那就认为找不到，第一次是因为登录成功的时候更新成功，导致第一个位置是10010，然后就匹配成功了，然后第一次更新之后，排序就变成了10010变成了最后，导致第二次更新的时候，比较第一次比较失败就认为是没有相同的。怎么解决呢？可以大概认为同步的时候插入的有问题（auto targetServer = *targetIt; ，插入的是这个，应该插入副本，如果插入副本，那么就应该第一次同步就出现问题了，不对，应该是第一个用户登录就出现问题了，这刚好解释了之前的疑惑，就是关于LbAgent.h中测试文件查询不到，而我的程序却能正常的原因，已在那里标明了这里的解释），以及排序规则有问题
+所以开始解决排序问题吧
+那个排序的问题在什么地方？首先你打算按照serviceCondition进行插入，但是查找的时候又想着按照ip和port查找，这显然是不可能的，因为插入的时候，红黑树的结构已经定下来了，这个 时候ip和port完全有可能在左树或者右树，所以找到找不到完全取决于serviceCondition，所以之前的思路就是错的，也就是插入的时候使用serviceCondition，查找的时候使用ip和port不可取，那之前的那种
+if (left == right) {
+		return left.serviceCondition < right.serviceCondition; 
+这种可取吗？也就是ip和port的排序通过serviceCondition关联，然后排序可以吗，这相当于是使用ip和port映射到了serviceCondition，然后对这个映射serviceCondition进行排序，查找的时候是相当于使用ip和port找到对应的映射，所以查找的准确与否需要保证映射serviceCondition唯一，（因为ip和port由于mysql的缘故，不可能重复），所以可取与否在于你的映射值的设计（至于之前设计的两种规则，一种是插入的规则，一种是 查找的规则，完全不可取）。然后又相当一种解决方案，既然你想排序serviceCondition，那么把set换成map不就行了，也就是双层map，里面的key是ip和port，value是serviceCondition，简直完美，不过唯一需要注意的是，需要把HostInfo改成两个类，一个类就是ip和port，另一个类是评价类，专门评价host的。还有一种解决方案是，自己实现一个排序算法，如果设计的足够精妙，应该也会很好
+第三种太麻烦，第一种感觉不太行（因为评价体系不太好设计），第二种更符合我的需求（我的需求是插入的IP和port不能一样，要按照serviceCondition进行排序，查找的时候按照ip和port查找出来就行），但是准备开始设计的时候发现，map如果按照value排序，需要先使用pair组合成一个，然后将pair变成vector，然后再利用sort对vector进行排序，显然太复杂了
+如果第二种行不通，那就第一种，那第一种完全可以进一步使用mutilset，这样就不用考虑问题了，如果评价有重复的，那就自己实现一个匹配进一步利用ip和port查找即可，完美。
+但是不行呀，我如果是刚从mysql那里的话，serviceCondition; 好像也能通过ip和port找到对应的serviceCondition，那如果我查找一个不存在的ip和port呢，condition肯定为0，这个时候肯定查找的是为0的那些ip和port，这该咋办，上述方案并不是一个优秀的方案
+需求具体来说是routerMap需要排序，修改（修改之后肯定要重新排序的，也就包含了原始值删除，新值插入的过程），tempRouterMap的边插入边排序的过程，注意tempRouterMap必须和routerMap类型一致，需要交换；user_ServerMap就是查找，并且删除和添加
+并且还需要user_ServerMap的value作为key查找routerMap（user_ServerMap和routerMap能共享一份数据吗？不行，因为如果一个map删除了一个元素，那么另一个map的key并没有删除）
+其实上述方案（就是映射的那个）有点类似于unordered_map和map结合的味道了，相当于我先查找最接近的那个 值，然后再小范围遍历对应的值即可（unordered_map也是一样，先查找对应的值，然后再小范围查找，但是unordered_map的查找效率更高），
+unordered_map和set结合岂不是更好？然后unordered_map的value是set的key引用？这样可以吗
+今天上午测了一上午，最终采取unordered_map和mutilset结合，unordered_map的key是ip和port，value是评价指标的地址。mutilset的值是评价指标的地址。
+这是今天测试的代码（在对应的项目测试路径下可以找到，这个bug的结尾也强调了路径）
+
+#include <iostream>
+#include <set>
+#include <unordered_map>
+
+struct serviceCondition{
+public:
+	int nums;
+	serviceCondition(){
+		std::cout << "无参构造serviceCondition" <<std::endl;
+	}
+	serviceCondition(int i){
+		std::cout << "正在生成serviceCondition" <<std::endl;
+		nums = i;
+	}
+	serviceCondition(const serviceCondition& obj){  //必须要加const，否则无法转换会报错
+		nums = obj.nums;
+		//obj.nums = nums;不对的
+		std::cout << "拷贝构造serviceCondition" <<std::endl;
+	}
+	//注意，移动构造前后依然是两个对象，只不过如果原来的对象里有堆内存的空间，使用移动构造，可以使用指针赋值的方式转移堆内存空间，前后依然要创建两个对象
+	//所以类对象中都是栈上的话，没有区别
+	serviceCondition(serviceCondition&& obj){   //如果不提供这个，那么std::move没用，依然会调用拷贝构造，如果提供了，需要提供operator=，因为如果提供移动，那么operator=会被标记为delete
+		nums = obj.nums;
+		std::cout << "移动构造serviceCondition" <<std::endl;
+	}
+	serviceCondition& operator=(const serviceCondition& obj){  
+		nums = obj.nums;
+		std::cout << "赋值serviceCondition" <<std::endl;
+		return *this;
+	}
+	~serviceCondition(){
+		std::cout << "正在析构serviceCondition" << "nums:" << nums << std::endl;
+	}
+};
+
+class cmp{
+public:
+	bool operator()(const serviceCondition& left, const serviceCondition& right){
+		return left.nums < right.nums;
+	}
+};
+
+int main()
+{
+	std::set<serviceCondition*> routerSet;
+	std::unordered_map<int, serviceCondition*>hostMap;
+	serviceCondition* i = new serviceCondition(1);
+	std::cout << "set中key和unordered_map中value为指针测试开始" << std::endl;
+	routerSet.insert(i);
+	
+	hostMap[10010] = i;
+	delete i;
+	
+	auto targetHost = hostMap.find(10010);
+	auto targetSer = routerSet.find(targetHost->second);
+	if(targetSer == routerSet.end()){
+		std::cout << "routerSet没有当前元素" << std::endl;
+	}else{
+		std::cout << "routerSet找到了当前元素" <<std::endl;
+	}
+	
+	for(auto key : routerSet){
+		std::cout <<"start" <<  key->nums << "end" << std::endl;
+	}
+	std::cout << "set中key和unordered_map中value为指针测试结束" << std::endl;
+	std::cout << std::endl;
+	
+	std::set<serviceCondition, cmp> routerSet1;
+	serviceCondition* j = new serviceCondition(2);
+	std::cout << "set中key为对象测试开始" << std::endl;
+	routerSet1.insert(*j);
+	delete j;
+	for(const auto& key : routerSet1){
+		std::cout <<"start" <<  key.nums << "end" << std::endl;
+	}
+	std::cout << "set中key为对象测试结束" << std::endl;
+	std::cout << std::endl;
+	
+	std::cout << "unordered_map中value为对象测试开始" << std::endl;
+	std::unordered_map<int, serviceCondition>hostMap1;
+	serviceCondition* k = new serviceCondition(3);
+	hostMap1[10010] = *k;   //这里是先调用的无参构造，然后调用的是赋值函数，而不是拷贝构造
+	std::cout << "unordered_map中value为对象测试结束" << std::endl;
+	std::cout << std::endl;
+	
+	std::cout << "set中key使用std::move测试开始" << std::endl;
+	serviceCondition m(4);
+	std::cout << "m的地址：" << &m << std::endl;
+	
+	routerSet1.insert(std::move(m));
+	
+	serviceCondition m2(4);
+	auto target = routerSet1.find(m2);
+	std::cout << "set中m的地址：" << &(*target) << std::endl;
+	std::cout << "set中key使用std::move测试结束" << std::endl;
+
+}
+
+这是输出的日志
+
+正在生成serviceCondition
+set中key和unordered_map中value为指针测试开始
+正在析构serviceConditionnums:1
+routerSet找到了当前元素
+start0end
+set中key和unordered_map中value为指针测试结束
+
+正在生成serviceCondition
+set中key为对象测试开始
+拷贝构造serviceCondition
+正在析构serviceConditionnums:2
+start2end
+set中key为对象测试结束
+
+unordered_map中value为对象测试开始
+正在生成serviceCondition
+无参构造serviceCondition
+赋值serviceCondition
+unordered_map中value为对象测试结束
+
+set中key使用std::move测试开始
+正在生成serviceCondition
+m的地址：0x7ffe4689eacc
+移动构造serviceCondition
+正在生成serviceCondition
+set中m的地址：0x20aefa0
+set中key使用std::move测试结束
+正在析构serviceConditionnums:4
+正在析构serviceConditionnums:4
+正在析构serviceConditionnums:3
+正在析构serviceConditionnums:4
+正在析构serviceConditionnums:2
+
+上面四个中，如果评价体系里面有指针，那么使用移动构造，如果评价对象不太复杂用对象也行，如果评价类对象比较复杂，使用指针，退而求其次使用智能指针。
+下面是具体的计划：
+
+当进行计划性的更新时，在创建tempSet时，通过查找unordered_map的key找到评价（如果没有找到，那么评价为0），生成两个对象，一个是key的，一个是评价的，评价的更新取决于tempSet和mutilset中的评价，更新完两个对象后，然后tempSet插入评价的地址，unordered_map也插入key对应的地址，最终将tempSet和roouterSet交换。返回基础服务器地址时，找到mutilset的第一个，（但是里面好像只记录了指标）（所以指标里面需要包含ip和port），然后找到里面的ip和port ，然后更新之前的评价，根据之前的旧评价，生成新评价（也是两个对象），删除旧评价（mutilset需要erase），并且需要释放之前的两个对象，然后将新评价插入进去（注意unordered_map、mutilset、user_Server等等，一个服务器都只有1个评价对象，其他的都是指针，最终评价是归roouterSet的，他有资格释放，其他人没资格，那更新的时候怎么更新，能不能在旧的对象上改造成新对象，这样修改的时候都不用管，只有删除的时候需要同步一下其他的map）（退而求其次，使用智能指针也可以）
+设计了一下午，如下：
+#include <iostream>
+#include <set>
+#include <unordered_map>
+
+class ServerAddr{
+public:
+	ServerAddr(){
+		m_token = rand()%100000;
+		//std::cout << "无参构造ServerAddr" <<std::endl;
+	}
+	ServerAddr(std::string ip, short port):ServerAddr(){
+		m_ip = ip;
+		m_port = port;
+	}
+	bool operator==(const ServerAddr& server)const {  //必须要有const，否则会报错
+		return server.m_ip == m_ip &&  server.m_port == m_port;
+	}
+public:
+	std::string m_ip;
+	short m_port;
+	int m_token;
+};
+
+struct serviceCondition{
+public:
+	serviceCondition(){
+		std::cout << "无参构造serviceCondition" <<std::endl;
+	}
+	serviceCondition(std::string ip, short port, int nums){
+		std::cout << "有参构造serviceCondition" <<std::endl;
+		m_addr.m_ip = ip;
+		m_addr.m_port = port;
+		m_nums = nums;
+	}
+	serviceCondition(const serviceCondition& obj){  //必须要加const，否则无法转换会报错
+		m_nums = obj.m_nums;
+		//obj.nums = nums;不对的
+		std::cout << "拷贝构造serviceCondition" <<std::endl;
+	}
+	//注意，移动构造前后依然是两个对象，只不过如果原来的对象里有堆内存的空间，使用移动构造，可以使用指针赋值的方式转移堆内存空间，前后依然要创建两个对象
+	//所以类对象中都是栈上的话，没有区别
+	serviceCondition(serviceCondition&& obj){   //如果不提供这个，那么std::move没用，依然会调用拷贝构造，如果提供了，需要提供operator=，因为如果提供移动，那么operator=会被标记为delete
+		m_nums = obj.m_nums;
+		std::cout << "移动构造serviceCondition" <<std::endl;
+	}
+	serviceCondition& operator=(const serviceCondition& obj){  
+		m_nums = obj.m_nums;
+		std::cout << "赋值serviceCondition" <<std::endl;
+		return *this;
+	}
+	~serviceCondition(){
+		std::cout << "正在析构serviceCondition" << "nums:" << m_nums << std::endl;
+	}
+public:
+	ServerAddr m_addr;
+	int m_nums;
+};
+
+//给mutliset用的
+class ptrCmp{
+public:
+	bool operator()(const serviceCondition* left, const serviceCondition* right){//const serviceCondition* &会报错
+		return left->m_nums < right->m_nums;
+	}
+};
+
+//给unordered_map用的
+class getHashCode{
+public:
+	std::size_t operator()(const ServerAddr& server) const{ //必须要有const，否则会报错
+		//生成ip的hash值
+		std::size_t h1 = std::hash<std::string>()(server.m_ip);
+		//生成port的hash值
+		std::size_t h2 = std::hash<short>()(server.m_port);
+		//生成token的hash值
+		//std::size_t h3 = std::hash<int>()(server.m_token);//不能使用随机数，否则你根本找不到你的数据
+		//使用异或运算降低碰撞(相同为为0，相异为1)
+		return h1 ^ h2 ;
+	}
+};
+
+bool insertSetElem(std::unordered_map<ServerAddr, serviceCondition*, getHashCode>&serverMap,
+				std::multiset<serviceCondition*,ptrCmp>& serverSet, serviceCondition* condition){
+	ServerAddr serverAddr = ServerAddr(condition->m_addr); //拷贝构造
+	std::cout << "serverAddr:" << serverAddr.m_ip << "   "<< serverAddr.m_port << std::endl;
+	if(serverMap.find(serverAddr) != serverMap.end()){
+		std::cout << "相同server，无法插入" << std::endl;
+		return false;
+	}
+	serverSet.insert(condition);
+	serverMap.emplace(serverAddr, condition);  //insert会出错
+	return true;
+}
+
+int main()
+{
+	std::multiset<serviceCondition*,ptrCmp> routerSet;
+	std::unordered_map<ServerAddr, serviceCondition*, getHashCode>serverMap;
+	//插入测试
+	serviceCondition* server1 = new serviceCondition("127.0.0.1", 10000, 1);
+	serviceCondition* server2 = new serviceCondition("127.0.0.1", 10001, 1);
+	serviceCondition* server3 = new serviceCondition("127.0.0.1", 10001, 2);
+	std::cout << "set中key和unordered_map中value为指针测试开始" << std::endl;
+	insertSetElem(serverMap, routerSet, server1);
+	insertSetElem(serverMap, routerSet, server2);
+	insertSetElem(serverMap, routerSet, server3);
+	for(auto key : routerSet){
+		std::cout <<"routerSet" <<  key->m_nums << std::endl;
+	}
+	for(auto key : serverMap){
+		std::cout <<"serverMap" <<  key.first.m_ip <<  key.first.m_port << std::endl;
+	}
+	
+	//修改测试
+	ServerAddr serverAddr = ServerAddr("127.0.0.1", 10000);
+	auto targetServer = serverMap.find(serverAddr);
+	if( targetServer != serverMap.end()){
+		//有这个元素，删除掉
+		//找到routerSet中该元素的原始地址
+		serviceCondition* condition = targetServer->second;
+		routerSet.find(condition);
+		//取出原始地址
+		routerSet.erase(condition);
+		condition->m_nums += 3;
+		routerSet.insert(condition);
+	}
+	std::cout <<"删除之后" <<  std::endl;
+	for(auto key : routerSet){
+		std::cout <<"routerSet" <<  key->m_nums << std::endl;
+	}
+	for(auto key : serverMap){
+		std::cout <<"serverMap" <<  key.first.m_ip <<  key.first.m_port << "  "<<key.second->m_nums <<std::endl;
+	}
+	std::cout << "set中key和unordered_map中value为指针测试结束" << std::endl;
+	return 0;
+}
+
+但是
+有参构造serviceCondition
+有参构造serviceCondition
+有参构造serviceCondition
+set中key和unordered_map中value为指针测试开始
+serverAddr:127.0.0.1   10000
+serverAddr:127.0.0.1   10001
+serverAddr:127.0.0.1   10001
+相同server，无法插入
+routerSet1
+routerSet1
+serverMap127.0.0.110001
+serverMap127.0.0.110000
+删除之后
+routerSet4
+serverMap127.0.0.110001  1
+serverMap127.0.0.110000  4
+set中key和unordered_map中value为指针测试结束
+增加是没问题的，修改时删除有问题，查找也是没问题的，所以解决删除的问题就行了。删除的时候，是根据负载情况相同与否删除的。。。。。。，比如一开始都是0，那么我如果erase routerSet中为0的元素，那么会删除掉所有的为0的元素，这就不行了。。。。可以看到上面日志routerSet只有一行4，这该怎么解决，一开始想的是能不能查找所有的为比如1的值然后再遍历这个小范围，删除掉对应的值，但发现并不行，根本没有对应的方法，c++20倒是有一种erase_if的函数，但是不想支持那么高的，前面一直想的是如何从这些小范围的重复的目标序列（比如serviceCondition都为5的序列中）中找出自己想要的ip和port（其实有euqal_range可以使用。。。。。），后面又想着怎么保证不重复，比如更新后看看集合中有没有相同的，有相同的再加减一点，比如，刚开始时随机生成一些较小值给serviceCondition，后面更新时也是判断有没有相同的，再比如，serviceCondition里增加一个专属于自己的id，排序的时候考虑一下id，后面否定了，因为排序必须按照这个condition，再比如，根据ip和port生成一个很小的值给serviceCondition。最后想到了一个比较理想的方案，serviceCondition的构造函数里生成一个很小的值给最终的评价，比如0.00001，这个很小的值只能在小数点位最后几位，相当于他的权重很小很小，千万分之几的那种，然后生成初始值之后，查看序列中是否存在如果存在，那就再生成一个，只要保证第一次没有重复，那么 以后肯定不会重复（注意，一个服务器只要lb服务器不关闭，全程只会生成一次评价对象，这个评价对象隶属于routerMap中的routerSet，只有他有权利析构评价对象，后面的对象都不会生成了，其他的map或者set都是保存这个对象的指针）然后其他的评价权重一定在这个小数位之前，那么最终大家的评价肯定不会相同了，比如2.50003和2.50005，当然了需要定义浮点数的比较规则。。。之前还考虑过怎么将重复序列映射为单一序列，这个也不再想了，我觉得我这个方案较为完美，查找删除添加都是onlogn，而且创建对象的次数很小很小，和服务器个数大致持平，如果服务器故障率较高，可能需要重新创建一下，为了保证初始评价一直都在，可以保存在一个变量中，然后每次更新评价，与一下
+
+
+然后开始了我的测试工作：
+首先是测试小数，产生的结果大都符合预期，但是最后多次连加之后，发现有误差，可以看下面的log，这个误差当时还认为可以达到分别是否相同的级别，但是不放心进行了1万次的相加相减同一个数就是下面的测试了，这里就不介绍了
+#include <iomanip>
+#include <iostream>
+#include <cmath> //必须要包含这个头文件，才会有double的，如果不用，就是c语言的abs，那个只能是整数，输出为0
+//而且double要使用fabs
+
+int main()
+{
+    double epsilon=1e-11;  //必须要为11，10的话就包不住了
+    double d1= 0.0000000001;
+    double d2= 0.001;
+	double d3 = 0.002;
+	double d4 = 322.331;
+	int num = 3;
+	//真实评价范围0.01-10000.01（7位）
+	//double的有效位数为15位。因为double有效数字为52，2^52有15位，所以有效范围为15位
+    //产生的小数范围为0.001到0.0000000001（10位有效数字）（为啥）（因为是按照100万台服务器设计的，
+	//如果位数不够，会有大量重复的元素。不好排序）
+	//评价法则，服务性能越好，评价分数越高（刚初始化时为满分，后面7位随机生成，这7位一定要保证必然是不同的）
+	//服务一台扣多少分，服务10台扣完（目前）
+	//比较法则
+	//直接比较即可，所有位数全都比较，由于最后7位不一样，所以都不可能相等,
+	
+	//相等法则
+	//如果两个变量相减的绝对值小于1e-11，就认为相等，其实我打印了一下，如果两个数完全相等，
+	//那么差值为0，一个小数位都没用
+	//不过又碰到一个难题，就是不支持浮点数相与，这该咋办，其实是不用管的，我后面的condition一定是在前面的，
+	//和后面不可能有关系,但是测试了好几次，发现确实会变化，可以写一个循环，生成真实评价测试一下，看看
+	//真实评价测试，大量相减之后会在-10的量级上徘徊，但是突然意识到不应该是7位，第一假如10000台服务器，那么应该是底数
+	//为10，也就是4位就够了，而不是所谓的7位，并且意识到完全可以使用int，在算真实评价之后*10000即可，然后想与，得到
+	//最终的排序评价，如果想要得到真实评价，除以10000即可，这个就没有精度上的丢失
+	//所以采用整数更合理一些，不过还是采用浮点数吧，但是排序的比较和查找的比较不一样，排序的比较是保证大家都不一样，
+	//查找的比较是我已经得到原值，不对，find的时候还是按照<进行比较来判断是否相等。。。。。
+	//算了采用整数吧，浮点数确实很难把控精度
+	double sum = d2+d1;
+    std::cout<<"epsilon is: "<< std::setprecision(30) << epsilon<<std::endl;
+	std::cout<<"d2 is: "<< std::setprecision(30) << d2<<std::endl;
+	std::cout<<"d3 is: "<< std::setprecision(30) << d3<<std::endl;
+	std::cout<<"num s: "<< std::setprecision(30) << num <<std::endl;
+    std::cout<<"sum   is: "<< std::setprecision(30) <<  sum <<std::endl;
+	sum += d3;
+	std::cout<<"sum   is: "<< std::setprecision(30) << sum <<std::endl;
+	sum = sum - d3 - d2;
+	std::cout<<"sum   is: "<< std::setprecision(30) << sum <<std::endl;
+	sum += d4;
+	sum -= d4;
+	std::cout<<"sum   is: "<< std::setprecision(30) << sum <<std::endl;
+    if (fabs(d1-sum) <  epsilon){
+        std::cout << "Equal!" << std::endl;
+    }
+    else{
+        std::cout << "Not equal!" << std::endl;
+    }
+
+    return 0;
+}
+
+epsilon is: 9.9999999999999993949696928194e-12
+d2 is: 0.00100000000000000002081668171172
+d3 is: 0.00200000000000000004163336342344
+num s: 3
+sum   is: 0.00100000010000000005491727073093
+sum   is: 0.00300000010000000009655063415437
+sum   is: 1.00000000034100589019203653152e-10
+sum   is: 9.99875737761612981557846069336e-11
+Equal!
+
+第二项测试前准备（产生指定范围的数）
+#include <iostream>
+#include <random>
+
+//产生的小数范围为0.001到0.0000000001（10位有效数字）
+//产生0.01-10000.01的随机数
+int main()
+{
+	std::random_device rd; // Non-determinstic seed source
+	std::default_random_engine rng {rd()}; // Create random number generator
+	std::uniform_real_distribution<double> u(0.0000000001,0.001);
+	std::cout << u(rd) <<std::endl;
+   return 0;
+}
+符合预期，这里不过多介绍
+
+第二项测试：
+#include <iostream>
+#include <random>
+#include <iomanip>
+
+//产生的小数范围为0.001到0.0000000001（10位有效数字）
+//产生0.01-10000.01的随机数
+
+int main()
+{
+        std::random_device rd; // Non-determinstic seed source
+        std::default_random_engine rng {rd()}; // Create random number generator
+        std::uniform_real_distribution<double> u0(0.0000000001,0.001);
+        std::uniform_real_distribution<double> u1(0.01,10000.01);
+        std::uniform_real_distribution<double> u2(-10000.01,-0.01);
+        double d0 = u0(rd);
+        double condition = 10000.01 ;
+        double start = condition + d0;
+        int notEqualTimes = 0;
+        for(int i = 0; i < 100000; i++){
+                double freshValue1 = u1(rd);
+                double freshValue2 = u2(rd);
+                start = start + freshValue1 + freshValue2;
+                start = start - freshValue1 - freshValue2;
+                std::cout<<"  "<< std::setprecision(30) << start <<std::endl;
+                std::cout<<"  "<< std::setprecision(30) << fabs(start-condition - d0) <<std::endl;
+                if (fabs(start-condition - d0) < 1e-10){
+                        std::cout << "Equal!" << std::endl;
+                }
+                else{
+                        notEqualTimes++;
+                        std::cout << "Not equal!" << std::endl;
+
+                }
+进行1万次的模拟更新服务评价，然后判断，
+发现他的精度级别不固定，最低是-10级别（后面又改成100还是1000万次忘记了，最低精度又变成了10-9。。。
+  10000.0108393044720287434756756
+  1.02107965539808415167399857637e-09
+Not equal!
+  10000.0108393044720287434756756
+  1.02107965539808415167399857637e-09
+。。。
+）（需要改成-9也就是0.00000001），但是这个已经不足以区分和其他的评价的区别了（但其实误判的几率很小，只有前面所有位都相同，最后一位（-10）或者两位（-9）不相同时才会认为相同），最终为了彻底杜绝这种累计误差，也为了省事，改成了int，上述的测试都更新在对应的文件夹测试文件里了，可以运行看看
+
+这是最终的代码测试代码，符合预期
+#include <iostream>
+#include <set>
+#include <unordered_map>
+#include <cmath>
+#include <random>
+
+class ServerAddr{
+public:
+	ServerAddr(){
+		m_token = rand()%100000;
+		//std::cout << "无参构造ServerAddr" <<std::endl;
+	}
+	ServerAddr(std::string ip, short port):ServerAddr(){
+		m_ip = ip;
+		m_port = port;
+	}
+	bool operator==(const ServerAddr& server)const {  //必须要有const，否则会报错
+		return server.m_ip == m_ip &&  server.m_port == m_port;
+	}
+public:
+	std::string m_ip;
+	short m_port;
+	int m_token;
+};
+
+struct serviceCondition; //需要前置声明一下
+//给mutliset用的
+//需要放在serviceCondition上面
+class ptrCmp{
+public:
+	bool operator()(const serviceCondition* left, const serviceCondition* right){//const serviceCondition* &会报错
+		return left < right;
+	}
+};
+
+struct serviceCondition{
+public:
+	serviceCondition(std::string ip, short port, int nums, const std::multiset<serviceCondition*,ptrCmp>& routerSet){
+		weight["m_clientNums"] = 1;
+		m_clientNums = 0;
+		m_initalCondition = getInitialCondition(routerSet);
+		m_condition = m_initalCondition;
+		refreshCondition();
+		std::cout << "有参构造serviceCondition" <<std::endl;
+		m_addr.m_ip = ip;
+		m_addr.m_port = port;
+		m_clientNums = nums;
+	}
+	serviceCondition(const serviceCondition& obj){  //必须要加const，否则无法转换会报错
+		//m_nums = obj.m_nums;
+		//obj.nums = nums;不对的
+		std::cout << "拷贝构造serviceCondition" <<std::endl;
+	}
+	//注意，移动构造前后依然是两个对象，只不过如果原来的对象里有堆内存的空间，使用移动构造，可以使用指针赋值的方式转移堆内存空间，前后依然要创建两个对象
+	//所以类对象中都是栈上的话，没有区别
+	serviceCondition(serviceCondition&& obj){   //如果不提供这个，那么std::move没用，依然会调用拷贝构造，如果提供了，需要提供operator=，因为如果提供移动，那么operator=会被标记为delete
+		//m_nums = obj.m_nums;
+		std::cout << "移动构造serviceCondition" <<std::endl;
+	}
+	serviceCondition& operator=(const serviceCondition& obj){  
+		//m_nums = obj.m_nums;
+		std::cout << "赋值serviceCondition" <<std::endl;
+		return *this;
+	}
+	~serviceCondition(){
+		std::cout << "正在析构serviceCondition" << "nums:" << m_clientNums << std::endl;
+	}
+	
+	//获取初始评价
+	int getInitialCondition(const std::multiset<serviceCondition*,ptrCmp>& routerSet){
+		//产生第7为到第14位的随机小数，刚好支持百万级别的（后面8位非常不容易重复）
+		//第15位一直为0，因为为了比较，保险一点，保证有终止点
+		//上面不再采用，采用5位表示10^5保证最大为10000台的服务器工作
+		//应该是2^16次方
+		//怎么确保初始评价唯一，只能一个一个遍历，然后取出低16位比较、
+		auto it = routerSet.begin();
+		int tempCondition = 0;
+		while(it != routerSet.end()){
+			std::random_device rd; // Non-determinstic seed source
+			std::default_random_engine rng {rd()}; // Create random number generator
+			//std::uniform_real_distribution<int> u(0,65535);
+			std::uniform_int_distribution<int> u(0,65535);
+			tempCondition = u(rd);
+			for(;it !=  routerSet.end(); it++){  //这个不能用范围for
+				if((*it)->m_initalCondition == tempCondition){  //(*it)->m_initalCondition 这个地方一定要注意
+					it = routerSet.begin();
+					break;
+				}
+			}
+		}
+		return tempCondition;
+	}
+	//设置比较函数（重载<）（这时候应该着重比较真正的因素）
+	bool operator<(const serviceCondition& obj){ //排序和查找都要用到
+		return m_condition < obj.m_condition;
+	}
+	void refreshCondition(){
+		m_condition =  static_cast<int>(m_clientNums * weight["m_clientNums"])<<16;
+		m_condition |= m_initalCondition;
+	}
+public:
+	//由于之前的测试，这里都采用unsigned int，而不再采用之前的double，可以看之前的测试
+	//unsigned int一共有10位，高5位给m_condition，低5位给m_initalCondition，然后两者相加得到排序评价，好像有可能相等
+	//按位？反正按位也是平分的，然后产生完移动一半即可
+	ServerAddr m_addr;
+	unsigned int m_condition;  //（0-128）？（排序评价）（高16位怎么安排都行，低16位给初始评价）
+	unsigned short m_initalCondition; //两个字节 （0-65535）
+	double readCondition;  //这个是真实地评价
+	int m_clientNums;  //当前服务客户端地个数
+	std::unordered_map<std::string, float> weight;  //应该从配置文件中读取
+};
+
+
+//给unordered_map用的
+class getHashCode{
+public:
+	std::size_t operator()(const ServerAddr& server) const{ //必须要有const，否则会报错
+		//生成ip的hash值
+		std::size_t h1 = std::hash<std::string>()(server.m_ip);
+		//生成port的hash值
+		std::size_t h2 = std::hash<short>()(server.m_port);
+		//生成token的hash值
+		//std::size_t h3 = std::hash<int>()(server.m_token);//不能使用随机数，否则你根本找不到你的数据
+		//使用异或运算降低碰撞(相同为为0，相异为1)
+		return h1 ^ h2 ;
+	}
+};
+
+bool insertSetElem(std::unordered_map<ServerAddr, serviceCondition*, getHashCode>&serverMap,
+				std::multiset<serviceCondition*,ptrCmp>& serverSet, serviceCondition* condition){
+	ServerAddr serverAddr = ServerAddr(condition->m_addr); //拷贝构造
+	std::cout << "serverAddr:" << serverAddr.m_ip << "   "<< serverAddr.m_port << std::endl;
+	if(serverMap.find(serverAddr) != serverMap.end()){
+		std::cout << "相同server，无法插入" << std::endl;
+		return false;
+	}
+	serverSet.insert(condition);
+	serverMap.emplace(serverAddr, condition);  //insert会出错
+	return true;
+}
+
+int main()
+{
+	std::multiset<serviceCondition*,ptrCmp> routerSet;
+	std::unordered_map<ServerAddr, serviceCondition*, getHashCode>serverMap;
+	//插入测试
+	serviceCondition* server1 = new serviceCondition("127.0.0.1", 10000, 1, routerSet);
+	serviceCondition* server2 = new serviceCondition("127.0.0.1", 10001, 1, routerSet);
+	serviceCondition* server3 = new serviceCondition("127.0.0.1", 10001, 2, routerSet);
+	std::cout << "set中key和unordered_map中value为指针测试开始" << std::endl;
+	insertSetElem(serverMap, routerSet, server1);
+	insertSetElem(serverMap, routerSet, server2);
+	insertSetElem(serverMap, routerSet, server3);
+	std::cout <<"插入之后"<< std::endl;
+	for(auto key : routerSet){
+		std::cout <<"routerSet" << "   "<< key->m_clientNums << std::endl;
+	}
+	for(auto key : serverMap){
+		std::cout <<"serverMap" << "   " <<key.first.m_ip << "   " <<  key.first.m_port << std::endl;
+	}
+	
+	//修改测试
+	ServerAddr serverAddr = ServerAddr("127.0.0.1", 10000);
+	auto targetServer = serverMap.find(serverAddr);
+	if( targetServer != serverMap.end()){
+		//有这个元素，删除掉
+		//找到routerSet中该元素的原始地址
+		serviceCondition* condition = targetServer->second;
+		routerSet.find(condition);
+		//取出原始地址
+		routerSet.erase(condition);
+		condition->m_clientNums += 3;
+		routerSet.insert(condition);
+	}
+	std::cout <<"修改之后" <<  std::endl;
+	for(auto key : routerSet){
+		std::cout <<"routerSet" << "   " <<  key->m_clientNums << std::endl;
+	}
+	for(auto key : serverMap){
+		std::cout <<"serverMap" << "   " <<  key.first.m_ip << "   " <<  key.first.m_port << "  "<<key.second->m_clientNums <<std::endl;
+	}
+	std::cout << "set中key和unordered_map中value为指针测试结束" << std::endl;
+	return 0;
+}
+日志是：
+有参构造serviceCondition
+有参构造serviceCondition
+有参构造serviceCondition
+set中key和unordered_map中value为指针测试开始
+serverAddr:127.0.0.1   10000
+serverAddr:127.0.0.1   10001
+serverAddr:127.0.0.1   10001
+相同server，无法插入
+插入之后
+routerSet   1
+routerSet   1
+serverMap   127.0.0.1   10001
+serverMap   127.0.0.1   10000
+修改之后
+routerSet   4
+routerSet   1
+serverMap   127.0.0.1   10001  1
+serverMap   127.0.0.1   10000  4
+set中key和unordered_map中value为指针测试结束
+
+符合预期，然后就按照上述这个改了
+上面的单元测试在下面路径中，这个 文件还有其他的单元测试
+/home/tony/myprojects/MovieHub/baseServer/tests/baseServerV0.1Extra
+
+关于更新上面这个lbAgent的bug就不在这里记录了，也不在lb那里记录，只在源文件相关位置记录即可，注意这个记录只是上面关于map的设计出现的bug相关
+
+在解决 了上述问题之后，继续测试第6项
+17、当更新完之后，登录第一个用户模块数变成了3，之后再登录也是3
+发现是指定的modid不对，是0
+DEBUG:src/LbAgent.cpp->returnBaseServer->line:214=[当前用户是否已在线：1]
+DEBUG:./include/LbAgent.h->updateServer->line:206=[当前更新的set的serverModid：0]
+DEBUG:src/LbAgent.cpp->returnBaseServer->line:232=[返回基础服务器IP之后，routerMap情况：]
+当前服务器模块个数：3
+当前模块1服务器个数0
+当前模块2服务器个数2
+ip:127.0.0.1    port:10010      在线人数:1
+ip:127.0.0.1    port:10011      在线人数:0
+
+也就是	serverMap.updateServer(targetServer);这里的(targetServer);的modid为0，也就是getServer返回的就是modid为0的
+发现mysql返回插入的时候就是0，可以看到执行insertServer时传进来的模块有id，但是插入成功打印就没有id（为0）了，后续得到一个server查找当前所属模块自然是0
+serverAddr:127.0.0.1    10010   所属模块1
+插入新server成功
+ip:127.0.0.1    port:10010      在线人数:0      所属模块:0
+
+发现在ServerCondition里面，初始化serverCondition的时候没有初始化地址的所属模块，只有下面两句
+m_addr.m_ip = addr.m_ip;
+m_addr.m_port = addr.m_port;
+改成下面的即可
+ServerCondition(ServerAddr& addr, const std::set<ServerCondition*, ServiceConditionCmp>& routerSet) :m_addr(addr)
+//最后那个会执行拷贝构造函数，系统提供了一个默认的拷贝构造函数（自己提供一个也行），甚至你可以在ServerCondition里面分别初始化三个属性，也就是
+m_addr.m_ip = addr.m_ip;
+m_addr.m_port = addr.m_port;
+m_addr.m_serverModid= addr.m_serverModid;
+
+再或者使用operator=
+m_addr = addr; 
+上面初始化都行，但是一定要初始化，否则肯定出错（并且如果提供了拷贝构造，一定要提供无参构造）
+./include/LbAgent.h: 在复制构造函数‘ServerCondition::ServerCondition(const ServerCondition&)’:
+./include/LbAgent.h:64:46: 错误：对‘ServerAddr::ServerAddr()’的调用没有匹配的函数
+  ServerCondition(const ServerCondition& obj) {  //必须要加const，否则无法转换会报错
+完美解决问题，不过上面这个为啥影响的是ServerCondition呢，我明明注释的是ServerAddr的无参呀，可能是ServerCondition含有ServerAddr，所以会执行
+
+18、但是发现不能很好的排序，比如我想的是一台服务器登录2个人之后，第三个人应该就该登录另一台了，但是很明显不是，而是会一直登录其中一台
+打印condition发现有的是0
+更新后Map：
+当前服务器模块个数：2
+当前模块1服务器个数2
+ip:127.0.0.1    port:10011      在线人数:0当前condition55814    所属模块:1
+ip:127.0.0.1    port:10010      在线人数:0当前condition0        所属模块:1
+当前模块2服务器个数0
+
+发现缘由了
+	int tempCondition = 0;
+		while (it != routerSet.end()) {
+			std::random_device rd; // Non-determinstic seed source
+			std::default_random_engine rng{ rd() }; // Create random number generator
+			//std::uniform_real_distribution<int> u(0,65535);
+			std::uniform_int_distribution<int> u(0, 65535);
+			tempCondition = u(rd);
+			for (; it != routerSet.end(); it++) {  //这个不能用范围for
+				if ((*it)->m_initalCondition == tempCondition) {  //(*it)->m_initalCondition 这个地方一定要注意
+					it = routerSet.begin();
+					break;
+				}
+			}
+		}
+		Debug("产生的随机初始condition：%d", tempCondition);
+		return tempCondition;
+	}
+可以看到如果第一个值，那么不会进入while。。。。改成do while结构就可以
+
+但是
+更新后Map：
+当前服务器模块个数：2
+当前模块1服务器个数2
+ip:127.0.0.1    port:10011      在线人数:0当前condition63843    所属模块:1
+ip:127.0.0.1    port:10010      在线人数:0当前condition18756    所属模块:1
+当前模块2服务器个数2
+ip:127.0.0.1    port:11001      在线人数:0当前condition24399    所属模块:2
+ip:127.0.0.1    port:11000      在线人数:0当前condition38366    所属模块:2
+
+。。。。
+
+当前模块1服务器个数2
+ip:127.0.0.1    port:10011      在线人数:1当前condition63843    所属模块:1
+ip:127.0.0.1    port:10010      在线人数:0当前condition18756    所属模块:1
+当前模块2服务器个数2
+ip:127.0.0.1    port:11001      在线人数:0当前condition24399    所属模块:2
+ip:127.0.0.1    port:11000      在线人数:0当前condition38366    所属模块:2
+
+登录人数增加之后，不更新。。。。。
+发现更新人数之后，根本没执行updateServer中的
+	//有这个元素，先插入，再删除掉原来的
+			//找到routerSet中该元素的原始地址
+			ServerCondition* server = *targetServer;  //注意这里的右边，没有*会出错
+			//取出原始地址
+			targetSet.erase(server);
+			//可以更新了，必须要在erase后面更新
+			Debug("即将执行updateServer中refreshCondition");
+			server->refreshCondition();
+			//插入更新后的值
+			targetSet.insert(server);
+			return true;
+
+发现找不到原来的值了
+DEBUG:./include/LbAgent.h->updateServer->line:219=[当前更新的set的serverModid：1]
+DEBUG:./include/LbAgent.h->updateServer->line:223=[当前要找的server对应的condition值：56156]
+正在执行ServerAddr拷贝构造函数
+无参构造ServerAddr
+DEBUG:src/LbAgent.cpp->returnBaseServer->line:232=[返回基础服务器IP之后，routerMap情况：]
+当前服务器模块个数：2
+当前模块1服务器个数2
+ip:127.0.0.1    port:10011      在线人数:1当前condition56156    所属模块:1
+ip:127.0.0.1    port:10010      在线人数:0当前condition35829    所属模块:1
+当前模块2服务器个数2
+打印日志发现就是要找的值56151，竟然找不到
+出在这个地方，这个改成<就能更新
+	return left >= right;
+>也能更新，但是带=不行
+
+但是更新的值不对。。。。
+UG:src/LbAgent.cpp->returnBaseServer->line:214=[当前用户是否已在线：1]
+DEBUG:./include/LbAgent.h->updateServer->line:220=[当前更新的set的serverModid：1]
+DEBUG:./include/LbAgent.h->updateServer->line:224=[当前要找的server对应的condition值：51737]
+DEBUG:./include/LbAgent.h->updateServer->line:233=[即将执行updateServer中refreshCondition]
+暂时性condition65536m_clientNums * m_weight[m_clientNums]1
+正在执行ServerAddr拷贝构造函数
+无参构造ServerAddr
+DEBUG:src/LbAgent.cpp->returnBaseServer->line:232=[返回基础服务器IP之后，routerMap情况：]
+当前服务器模块个数：2
+当前模块1服务器个数2
+ip:127.0.0.1    port:10011      在线人数:1当前condition117273   所属模块:1
+按理来说应该是151737而不是117273
+不对，推了一遍发现结果是正确的
+10000000000000000(1<<16)和1011000101000010(51737])相或就是11011000101000010(110914)
+所以是正确的
+
+
+19、在测试7、三个用户登陆成功，获取到正确的组列表，喜欢列表，朋友列表，观察BaseServer执行handleLoginStep2是否符合预期的时候编译出错
+主要是两个问题，集中在下面
+//这个太罗嗦了，一定要改进
+	if (typeid(Request_T) == typeid(user::GetUserFavoriteResponse)) {
+		//protobuf并没有提供简单的赋值函数，这样写是不对的：response.set_favoritelist(*userInfo.get());
+		//可以使用GetUserFavoriteResponse重载的=，如果还不行，自己可以实现一个for
+		//for (int i = 0; i < userInfo.file_size(); i++)
+		//下面已经没有错了
+		//response.favoritelist() = * userInfo.get();   错误编译不通过
+		//response.favoritelist().Swap(userInfo.get());//这个swap方法很好，所以如果不知道怎么操作，一定要读头文件
+		//但是智能指针返回的是const，编译不通过（Swap的参数不能是const）：将‘const user::GetUserFavoriteResponse’作为‘void user::GetUserFavoriteResponse::Swap(user::GetUserFavoriteResponse*)’
+		//response.favoritelist() = *userInfo; //这个和* userInfo.get()等价，也会出现上面这个编译错误
+		//response.favoritelist().CopyFrom(*userInfo);  //copyFrom返回的是void，并且也有const，但是这个也编译失败
+		response.favoritelist()(*userInfo);  //拷贝构造
+	}
+	else if (typeid(Request_T) == typeid(user::GetFriendsResponse)) {
+		response.friendlist() = *userInfo;
+	}
+if是运行期的if，所以编译期会所有的分支都生成导致，出现编译错误，这个只能拆分成3个来写了（大致是三个类型不能互相转换，比如ser::GetUserFavoriteResponse和user::GetFriendsResponse不能互相转换）解决的方式就是不使用模板
+第二个问题就是
+response.friendlist() = *userInfo;
+一直一直报
+ 错误：将‘const user::GetUserFavoriteResponse’作为‘void user::GetUserFavoriteResponse::CopyFrom(const user::GetUserFavoriteResponse&)’的‘this’实参时丢弃了类型限定 [-fpermissive]
+改了好多个版本（可以看源文件），最后发现riendlist() 返回的是const，改不了，所改成了下面
+response.mutable_favoritelist()->CopyFrom(*userInfo); 
+//真的不知道怎么改 看头文件
+后面又发现这种：
+response.mutable_favoritelist()->Swap(userInfo.get());   很棒的设计，就是不知道安不安全
+
+20、在给客户端发送3张表的时候，发现客户端没有更新，不过服务器倒是看到正在转发
+服务端日志
+学习交流群
+相亲相爱一家亲,大小为：50]
+DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：141，读缓冲区的写指针为：155]
+DEBUG:src/Message.cpp->analyze->line:29=[当前数据解析成功,msgid：26，msglen：50，m_data 
+学习交流群
+相亲相爱一家亲 ]
+DEBUG:src/Message.cpp->analyze->line:30=[Response,读缓冲区的读指针为：141，读缓冲区的写指针为：155]
+DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：26]
+DEBUG:src/MsgRouter.cpp->call->line:32=[userData的地址：0]
+DEBUG:src/BaseServer.cpp->handleGroupList->line:356=[组列表开始发给客户端]
+DEBUG:src/BaseServer.cpp->parseRequest->line:603=[requestHandle开始执行]
+DEBUG:src/MsgRouter.cpp->call->line:34=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:14]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:10]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:8, this->m_msglen:6]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：149，读缓冲区的写指针为：155]
+DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为 爱一家亲,大小为：6]
+DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：155，读缓冲区的写指针为：155]
+DEBUG:src/Message.cpp->analyze->line:29=[当前数据解析成功,msgid：8，msglen：6，m_data 爱一家亲 ]
+DEBUG:src/Message.cpp->analyze->line:30=[Response,读缓冲区的读指针为：155，读缓冲区的写指针为：155]
+DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：8]
+当前msgid未注册，已按默认动作处理
+
+客户端
+：12]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:66=[扩充Buf大小为两倍]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:72=[Buf的大小为：26]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:279=[尝试性扩容后（只是调用扩容接口）当前Buf的情况为：]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:285=[读数据完成，读到的字节数为：12]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:12]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:8]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:2, this->m_msglen:4]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：8，读缓冲区的写指针为：12]
+DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为 ,大小为：4]
+DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：12，读缓冲区的写指针为：12]
+DEBUG:src/Message.cpp->analyze->line:29=[当前数据解析成功,msgid：2，msglen：4，m_data  ]
+DEBUG:src/Message.cpp->analyze->line:30=[Response,读缓冲区的读指针为：12，读缓冲区的写指针为：12]
+DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：2]
+当前msgid未注册，已按默认动作处理
+DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：10的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+发现是
+response.mutable_friendlist()->Swap(userInfo.get());
+auto clientPair = uid_conn.find(userInfo->uid());
+先交换再查找，肯定找不到了。。。。。。
+
+21、最后一个组列表发送不成功。。。。。
+DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:72]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:68]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:26, this->m_msglen:50]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：91，读缓冲区的写指针为：155]
+DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为 
+学习交流群
+相亲相爱一家亲,大小为：50]
+DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：141，读缓冲区的写指针为：155]
+DEBUG:src/Message.cpp->analyze->line:29=[当前数据解析成功,msgid：26，msglen：50，m_data 
+学习交流群
+相亲相爱一家亲 ]
+DEBUG:src/Message.cpp->analyze->line:30=[Response,读缓冲区的读指针为：141，读缓冲区的写指针为：155]
+DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：26]
+DEBUG:src/MsgRouter.cpp->call->line:32=[userData的地址：0]
+DEBUG:src/BaseServer.cpp->handleGroupList->line:356=[组列表开始发给客户端]
+DEBUG:src/BaseServer.cpp->parseRequest->line:603=[requestHandle开始执行]
+DEBUG:src/BaseServer.cpp->packageMsg->line:619=[requestHandle开始回复数据]
+DEBUG:src/BaseServer.cpp->tcpSendMsg->line:657=[tcpSendMsg已经打包数据完成，准备执行发送函数]
+DEBUG:src/NetConnection.cpp->sendMsg->line:92=[正在执行SendMsg]
+DEBUG:src/NetConnection.cpp->sendMsg->line:101=[本次发送数据，是否激活写事件：0]
+DEBUG:src/NetConnection.cpp->sendMsg->line:120=[当前的数据为:2,52]
+DEBUG:src/NetConnection.cpp->sendMsg->line:121=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[DEBUG:src/Buffer.cpp->writeBufferToSocket->line:380=[本次写到socket的字节数为：87]
+DEBUG:src/NetConnection.cpp->processWrite->line:79=[本次发送的字节大小为：87]
+DEBUG:src/NetConnection.cpp->processWrite->line:83=[正在关闭写事件]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有1个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:21]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：21的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+当前大小：8093,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8089,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8085,需要扩容的大小：52]
+DEBUG:src/NetConnection.cpp->sendMsg->line:135=[当前即将写的写缓冲区的内存情况为：m_readPos：99，m_writePos：159，getReadSize()：60，getWriteSize()：8033，data：]
+可以看到是在sendMsg判断完是否应该开启之后（前面两个响应（朋友和喜欢列表）87个字节），发出去的，导致开启写事件失败，可能是个小概率事件
+被我猜中了，果然是个小概率事件，就是
+if (m_wbuffer->getReadSize() == 0 ) {
+		WriteIsActive = true;
+	}
+	else {
+		//应该开启，然后检查一下是否开启,如果没有开启需要开启
+		if(!m_channel->writeIsEnable())WriteIsActive = true;
+	}
+	Debug("本次发送数据，是否激活写事件：%d", WriteIsActive);
+	if (copyResponse) {
+		//这里需要先判断Msg的解析状态在决定处不处理
+		if (m_response->m_state != HandleState::Done) {
+			Debug("当前响应状态：%d", m_response->m_state);
+			return 0; //代表什么也没做
+		}
+		Debug("m_wbuffer->getReadSize():%d", m_wbuffer->getReadSize());
+执行第一个if (m_wbuffer->getReadSize() == 0 ) {的时候还没为0，但是到Debug("m_wbuffer->getReadSize():%d", m_wbuffer->getReadSize());这里就为0了
+这个到后面再改把
+
+22、在测试两个两个不同服务器上的用户发消息时，接收客户端收不到消息，查看日志发现lb服务器确实转发消息到目的服务器了，但是目的服务器没收到，导致后续无法正常进行
+lb服务器日志：
+DEBUG:src/Udp.cpp->sendMsg->line:129=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:130=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:6695]
+DEBUG:src/Udp.cpp->sendMsg->line:189=[当前的数据为:5,15你好*]
+DEBUG:src/Udp.cpp->sendMsg->line:190=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8108,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8104,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8100,需要扩容的大小：15]
+DEBUG:src/Udp.cpp->sendMsg->line:199=[当前即将写的写缓冲区的内存情况为：m_readPos：84，m_writePos：107，getReadSize()：23，getWriteSize()：8085，data：]
+DEBUG:src/Udp.cpp->sendMsg->line:205=[压入前当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:206=[当前udp地址队列大小：0]
+DEBUG:src/Udp.cpp->sendMsg->line:212=[正在压入消息地址]
+DEBUG:src/Udp.cpp->sendMsg->line:215=[当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:216=[当前udp地址队列大小：1]
+DEBUG:src/Udp.cpp->sendMsg->line:217=[队头（网络地址）：ip：16777343, port:6695]
+DEBUG:src/Udp.cpp->sendMsg->line:218=[队尾（网络地址）：ip：16777343, port:6695]
+DEBUG:src/Udp.cpp->sendMsg->line:223=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+DEBUG:src/LbAgent.cpp->packageMsg->line:481=[requestHandle开始回复数据]
+DEBUG:src/Udp.cpp->sendMsg->line:129=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:130=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:29369]
+DEBUG:src/Udp.cpp->sendMsg->line:176=[正在强制发送消息]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:87=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:10010]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:402=[正在发消息给：127.0.0.1:10010]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:418=[本次写到socket的字节数为：23]
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：23]
+DEBUG:src/Udp.cpp->sendMsg->line:189=[当前的数据为:6,2]
+DEBUG:src/Udp.cpp->sendMsg->line:190=[m_wbuffer->getReadSize():0]
+可以看到确实发给：ip：127.0.0.1, port:10010了，但是没收到，目的服务器没有输出
+用udp测试工具查看发现baseServer检测不到消息接收了，那肯定是没有回到wait或者关闭读事件了
+不对。。。。。。。lb服务器是要发udp的地址给基础服务器，但是上面当前要发送的地址信息：ip：127.0.0.1, port:10010是tcpServer的地址，当然发送不成立了（lb服务器把tcp的地址当成udp的地址来发了）， 这到现在才意识到。。。。。
+lb服务器需要保存一下各个服务器的udp地址，后期改成tcp通信就不用管理这个bug了
+改成	std::unordered_map<int, std::pair<ServerAddr, sockaddr_in>> user_ServerMap;  //注意这里不能加const，否则会报错   
+这个，然后增加对应的hash和==仿函数，再把其他调用的地方改一下就可以了，要注意find和[]的取值方式
+
+23、在发送注册用户请求的时候出现了段错误（可以确定是在handleRegister这个函数里）
+EBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树15有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/NetConnection.cpp->processRead->line:21=[正在读fd：21发来的消息并解析]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:277=[本次读到socket的数据大小为：58,当前Buf的情况为 ，当前读指针：0，当前写指针：58]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8134,需要扩容的大小：58]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:279=[尝试性扩容后（只是调用扩容接口）当前Buf的情况为 ]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:285=[读数据完成，读到的字节数为：58]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:58]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:54]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:8, this->m_msglen:50]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：8，读缓冲区的写指针为：58]
+DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为 人生得意需尽欢998800"可爱的夏天,大小为：50]
+DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：58，读缓冲区的写指针为：58]
+DEBUG:src/Message.cpp->analyze->line:29=[当前数据解析成功,msgid：8，msglen：50，m_data 人生得意需尽欢998800"可爱的夏天 ]
+DEBUG:src/Message.cpp->analyze->line:30=[Response,读缓冲区的读指针为：58，读缓冲区的写指针为：58]
+DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：8]
+DEBUG:src/MsgRouter.cpp->call->line:32=[userData的地址：0]
+DEBUG:src/BaseServer.cpp->parseRequest->line:622=[requestHandle开始执行]
+段错误(吐核)
+{
+	auto registerRequest = parseRequest<NetConnection, baseService::RegisterRequest>(conn);  //baseService::RegisterRequest
+	auto userInfo = (UserData*)conn->m_dymaicParam;
+在这里，注册的时候，根本就没有存储过>m_dymaicParam;，导致这里提取直接段错误（这个函数看了一下也不需要这个，但是需要保存倒是真的），应该当时想的是保存，结果变成取了
+而且在注册的时候发现客户端必须要提供uid，所以顺便又进行了一下协议的改动以及base服务器的注册和更新流程（主要就集中在handleRegisterUserResult这个函数上。另外两个服务器不用动）（之前是忘记给lb服务器发注册同步的消息了，但是确实需要一个uid来索引当前的conn）（而且发现之前内存泄漏的问题，就是连接属性没有释放，这个我都放到底层了）
+
+24、由于mysql执行语句失败，但是不lb服务器更新不成功（也就是即使注册失败，原来的服务器分配信息也不删除），是因为执行mysql语句后没有插入成功，但是基础服务器这边认为成功，发了一个注册成功的消息，并且 给客户端也发了一个，这就有问题了
+但其实打印出来uid为0，发现mysql这里逻辑有点问题
+	if (registedUid != 0) {
+			responseData->set_result(registedUid);
+		}
+		else {
+			responseData->set_uid(requestData->uid());
+		}，
+else那里如果查询为0，应该设置>set_result，改正一下，改正之后，注册失败的时候lb服务器和客户端就正常了
+
+25、账号注册失败，发现执行的语句是insert into `users` values(NULL, 中华小子, 4321, 1); ERROR 1054 (42S22): Unknown column '中华小子' in 'field list'
+但其实应该执行的语句是
+INSERT INTO `users`
+	VALUES(NULL,  "小企鹅", "1012", 1);
+可以发现中间两项需要加上""，否则会执行失败，但是我明明记得之前测试通过了，后面才发现
+InsertUserData.set_uid(5495);  //这个uid模拟随机生成的一个id
+	InsertUserData.set_name("'张三'");
+	InsertUserData.set_passwd("7777");  //这个uid模拟随机生成的一个id
+当时加了引号，感觉还是把引号放到mysql这里比较好，上层就只负责传递原来的字符串就行
+将sqls[1][2] = "insert into `users` values(NULL, %s, %s, 1)";  所以这条语句改成sqls[1][2] = "insert into `users` values(NULL, '%s', '%s', 1)";
+奇怪了，使用连接执行失败，，查询不到插入的信息，手动复制进去语句，执行成功了insert into `users` values(NULL, '赵文', '6969', 1)
+
+tmd，mysql根本没插入。。。。
+	sprintf(sql, sqls[1][2].data(), requestData->name().data(), requestData->passwd().data());
+	Debug("添加基础信息_sql:%s", sql);
+	//查询最后的那个信息，返回给对端
+	conn->query("select last_insert_id()"); 
+直接查询
+conn->query("select last_insert_id()"); 服了（不过上面的那个insert into `users` values(NULL, 中华小子, 4321, 1);确实有问题）
+
+26注册group的时候也是注册不成功，高度怀疑也是上面没加''的原因
+[注册grpup_sql:insert into `group` values(NULL, 八卦小分队, 可爱的夏天, 1, 1)]
+DEBUG:src/MysqlAgent.cpp->analyzeQueryResult->line:466=[注册失败]
+对应的代码
+	Debug("注册grpup_sql:%s", sql);
+	//更新
+	if (conn->update(sql)) {
+		responseData->set_result(1);
+		conn->query("select last_insert_id()"); 
+		while (conn->next()) {
+			responseData->set_gid(std::stoi(conn->value(0)));
+		}
+		//添加当前成员为组成员
+		memset(sql, 0, 256);
+		sprintf(sql, sqls[2][1].data(), responseData->gid(), requestData->uid());
+		conn->update(sql);
+	}
+	else {
+		Debug("注册失败");
+果然是这个原因，按照上面改改即可
+
+27、添加组的时候，发现不能更新群组
+else if (addRequest->modid() == 2) {//2代表请求添加群组
+		//添加群组成员关系
+		mysqlService::AddUserToGroupRequest addUserToGroupData;
+		addUserToGroupData.set_uid(userInfo->m_uid);
+		addUserToGroupData.set_gid(addRequest->id());
+		tcpSendMsg<mysqlService::AddUserToGroupRequest>(mysqlClient, &addUserToGroupData);
+		//获得组列表，然后由响应函数返回结果
+		user::GetUserGroupsRequest getUserGroupsData;
+		getUserGroupsData.set_uid(addRequest->id());
+		tcpSendMsg<user::GetUserGroupsRequest>(mysqlClient, &getUserGroupsData, (int)mysqlService::ID_GetUserGroupsRequest);
+	}
+也就是这一段没反应（如果uid和gid相同就有用），然后发现getUserGroupsData.set_uid(addRequest->id());这一句有问题。。应该时getUserGroupsData.set_uid(userInfo->m_uid);

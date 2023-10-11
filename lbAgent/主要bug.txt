@@ -1,0 +1,1227 @@
+1、[tony@heihei lbAgent]$ make
+g++ -g -Wall -O2 -std=c++11 -c -o ../tools/protobuf/router/router.pb.o ../tools/protobuf/router/router.pb.cc -I./include -I../reactor/include -I../tools/protobuf/router
+g++ -g -Wall -O2 -std=c++11 -o  ../tools/protobuf/router/router.pb.o -I./include -I../reactor/include -I../tools/protobuf/router -L../reactor/lib -lreactor -lprotobuf
+/usr/lib/gcc/x86_64-redhat-linux/4.8.5/../../../../lib64/crt1.o：在函数‘_start’中：
+(.text+0x20)：对‘main’未定义的引用
+原因是
+$(CXX) $(CFLAGS) -o $(OBJS) $(INC) $(LIB)，错把-o $(OBJS)当成目标了
+改成 $(CXX) $(CFLAGS) -o $(TARGET) $(OBJS) $(INC) $(LIB)
+
+
+2、不对，发现改完之后还是类似的错误
+g++ -g -Wall -O2 -std=c++11 -c -o ../tools/protobuf/router/router.pb.o ../tools/protobuf/router/router.pb.cc -I./include -I../reactor/include -I../tools/protobuf/router
+mkdir -p bin #这个不要少
+#g++ -g -Wall -O2 -std=c++11 -o  ../tools/protobuf/router/router.pb.o -I./include -I../reactor/include -I../tools/protobuf/router -L../reactor/lib -lreactor -lprotobuf 这是不对的，这样就会以 ../tools/protobuf/router/router.pb.o为目标了
+g++ -g -Wall -O2 -std=c++11 -o ./bin/lbServer  ../tools/protobuf/router/router.pb.o -I./include -I../reactor/include -I../tools/protobuf/router -L../reactor/lib -lreactor -lprotobuf
+/usr/lib/gcc/x86_64-redhat-linux/4.8.5/../../../../lib64/crt1.o：在函数‘_start’中：
+然后我发现只有一个../tools/protobuf/router/router.pb.o 文件，后面发现是：
+#当前模块
+SRC=./src/
+INC=-I./include
+OBJS=$(patsubst %.cpp, %.o, $(SRC/*.cpp))
+SRC后面多了一个/我也是挺无语，这样的话OBJS实际上SRC就是空的了
+发现还是错的。。。。然后我输出echo  ../tools/protobuf/router/router.pb.o，发现只有一个.o
+然后发现 $(SRC/*.cpp)是错的。。。。。应该是 $(SRC)/*.cpp
+但是上面两种确实是不规范的
+
+3、然后发现改完后还是会出现一点问题：
+mkdir -p bin #这个不要少
+#g++ -g -Wall -O2 -std=c++11 -o  ./src/*.o ../tools/protobuf/router/router.pb.o -I./include -I../reactor/include -I../tools/protobuf/router -L../reactor/lib -lreactor -lprotobuf 这是不对的，这样就会以 ./src/*.o ../tools/protobuf/router/router.pb.o为目标了
+g++ -g -Wall -O2 -std=c++11 -o ./bin/lbServer  ./src/*.o ../tools/protobuf/router/router.pb.o -I./include -I../reactor/include -I../tools/protobuf/router -L../reactor/lib -lreactor -lprotobuf
+./src/*.o：在函数‘main’中：
+/home/tony/myprojects/MovieHub/lbAgent/src/server.cpp:4：对‘LbAgent::LbAgent()’未定义的引用
+collect2: 错误：ld 返回 1
+make: *** [bin/lbServer] 错误 1
+在信息中发现./src/*.o竟然没有展开，看了第四阶段的视频，发现应该用wildcard获取某些文件。。。。
+然后把SRC=./src/  改成了
+SRC=$(wildcard ./src/*.cpp)就编译成功了
+
+4、rc/LbAgent.cpp: 在成员函数‘void LbAgent::monitor()’中:
+src/LbAgent.cpp:21:20: 错误：对‘begin(std::pair<const int, std::set<HostInfo> >&)’的调用没有匹配的函数
+   for (auto host : set) {
+源代码是 for (auto et : tempRouterMap) {
+		for (auto host : set) {
+注意map返回的是对组，需要改成这样
+for (auto key_set : tempRouterMap) {
+		for (auto host : key_set.second) {
+			if (host->serviceCondit
+5、obuf/lbService -L../reactor/lib -lreactor -lprotobuf
+/usr/bin/ld: ../reactor/lib/libreactor.a(Buffer.o): undefined reference to symbol 'pthread_once@@GLIBC_2.2.5'
+//usr/lib64/libpthread.so.0: error adding symbols: DSO missing from command line
+没加-lpthread
+
+6、lbServer: src/EventLoop.cpp:193: bool EventLoop::modifyChannel(Channel*): Assertion `m_channelMap.find(channel->m_fd) != m_channelMap.end()' failed.
+DEBUG:src/Buffer.cpp->resizeBuffer->line:66=[扩充Buf大小为两倍]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:72=[Buf的大小为：22]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：4,需要扩容的大小：2]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：4,需要扩容的大小：2]
+DEBUG:src/NetConnection.cpp->sendMsg->line:126=[当前即将写的写缓冲区的内存情况为：m_readPos：0，m_writePos：20，getReadSize()：20，getWriteSize()：2，data：]
+已放弃(吐核)
+tcp客户端发消息给mysql服务器的时候吗，段错误，忘记先连接了，而是直接发
+
+7、make: “bin/lbServer”是最新的。
+[tony@heihei lbAgent]$ make clean
+make: 对“clean”无需做任何事。
+
+源码是这样的PHONY: clean
+    -rm -rf $(TARGET) $(OBJS)
+应该改成这样
+
+.PHONY: clean
+
+clean:
+    rm -f src/*.o $(TARGET) $(PROTO_MYSQL_SERVICE/*.o)
+
+
+8、出现一个很诡异的现象，就是
+	Debug("正在请求第一张表");
+		operatorMysql(1);
+		//第二张表
+		Debug("正在请求第二张表");
+		operatorMysql(2);
+		//发送完之后就可以退出了，然后等待消息到来触发函数
+		//为了保证性能，可以让这个函数一定周期执行以下，也就是休眠一段时间唤醒检测一下
+		std::this_thread::sleep_for(std::chrono::seconds(10)); //10秒更新一次
+这里明明请求两次，但是服务器那边只响应一次
+具体日志如下：
+DEBUG:src/LbAgent.cpp->planUpdateRouter->line:51=[正在请求第一张表]
+DEBUG:src/TcpClient.cpp->connected->line:86=[已连接到127.0.0.1:10000]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：10的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树7有2事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/NetConnection.cpp->processWrite->line:52=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/NetConnection.cpp->processWrite->line:74=[本次发送的字节大小为：0]
+DEBUG:src/LbAgent.cpp->operatorMysql->line:199=[当前的数据为:1,2]
+DEBUG:src/NetConnection.cpp->sendMsg->line:87=[正在执行SendMsg]
+DEBUG:src/NetConnection.cpp->sendMsg->line:92=[本次发送数据，是否激活写事件：1]
+DEBUG:src/NetConnection.cpp->sendMsg->line:111=[当前的数据为:1,2]
+DEBUG:src/NetConnection.cpp->sendMsg->line:112=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:66=[扩充Buf大小为两倍]
+DEBUG:src/NetConnection.cpp->processWrite->line:78=[正在关闭写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:85=[正在唤醒子线程]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：10的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第1件事情]
+DEBUG:src/EventLoop.cpp->readMyData->line:102=[已被唤醒,主线程说：该起来干活了该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:108=[正在处理任务,当前一共有2个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:10]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:72=[DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:10]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：8的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+Buf的大小为：10]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：6,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:66=[扩充Buf大小为两倍]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:72=[Buf的大小为：14]
+DEBUG:src/NetConnection.cpp->sendMsg->line:123=[当前即将写的写缓冲区的内存情况为：m_readPos：0，m_writePos：10，getReadSize()：10，getWriteSize()：4，data：]
+DEBUG:src/NetConnection.cpp->sendMsg->line:129=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:85=[正在唤醒子线程]
+DEBUG:src/LbAgent.cpp->planUpdateRouter->line:54=[正在请求第二张表]
+DEBUG:src/LbAgent.cpp->operatorMysql->line:199=[当前的数据为:1,2]
+DEBUG:src/NetConnection.cpp->sendMsg->line:87=[正在执行SendMsg]
+DEBUG:src/NetConnection.cpp->sendMsg->line:92=[本次发送数据，是否激活写事件：0]
+DEBUG:src/NetConnection.cpp->sendMsg->line:111=[当前的数据为:1,2]
+DEBUG:src/NetConnection.cpp->sendMsg->line:112=[m_wbuffer->getReadSize():10]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:66=[扩充Buf大小为两倍]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:72=[Buf的大小为：22]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：4,需要扩容的大小：2]
+DEBUG:src/NetConnection.cpp->sendMsg->line:123=[当前即将写的写缓冲区的内存情况为：m_readPos：0，m_writePos：20，getReadSize()：20，getWriteSize()：2，data：]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树7有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/EventLoop.cpp->readMyData->line:102=[已被唤醒,主线程说：该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:108=[正在处理任务,当前一共有1个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:10]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：8的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树7有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/NetConnection.cpp->processWrite->line:52=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:372=[本次写到socket的字节数为：20]
+DEBUG:src/NetConnection.cpp->processWrite->line:74=[本次发送的字节大小为：20]
+DEBUG:src/NetConnection.cpp->processWrite->line:78=[正在关闭写事件]
+可以看到，两次连续的请求（每次请求10个字节被当成一个数据直接发过去了），而服务器那边接受完数据只检查前10个字节，就导致后10个字节的数据还在缓冲区，下次再来20个字节，然后就只响应前10个字节，所以就出现了每次明明请求两次，但是只响应一次的怪现象
+之前的解析代码是
+if (ret > 0) {
+		//业务逻辑处理
+		//std::cout << "开始解析数据" << std::endl;
+		m_request->analyze(this); //解析数据（业务处理，并将想要的数据放到m_response）
+		
+这个时候应该改成如下：
+//这个while的作用是防止多个请求连续过来
+		while (m_rbuffer->getReadSize() != 0)
+		{
+			int analyzeState = m_request->analyze(this); //解析数据（业务处理，并将想要的数据放到m_response）
+			if (analyzeState == 0)break;  //如果为0 说明还需要数据，就不需要继续while了
+		}
+
+9、当把数据库的IP和端口都设置成了主机类型，其中ip设置为了字符串类型后，貌似出现了之前的bug，lbAgent的日志结果如下：
+                                  DEBUG:src/Buffer.cpp->readSocketToBuffer->line:277=[读数据完成，读到的字节数为：42]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:133=[readFromBuffer正在执行，size：4, getReadSize:42]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:133=[readFromBuffer正在执行，size：4, getReadSize:38]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:236060936, this->m_msglen:842074378]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：8，读缓冲区的写指针为：42]
+DEBUG:src/Message.cpp->getRequest->line:97=[MsgBody正在HandleState::WaitingBody， m_msglen为：842074378,getReadSize为34]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：10的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+可以看到解析的类型和尺寸明显不对，然后陷入等待，而mysql服务器的日志是下面：
+DEBUG:src/Message.cpp->analyze->line:29=[当前数据解析成功,msgid：1，msglen：2，m_data  ]
+DEBUG:src/Message.cpp->analyze->line:30=[Response,读缓冲区的读指针为：10，读缓冲区的写指针为：20]
+DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：1]
+DEBUG:src/MsgRouter.cpp->call->line:32=[userData的地址：0]
+DEBUG:src/MysqlAgent.cpp->requestHandle->line:32=[requestHandle开始执行]
+DEBUG:src/MysqlAgent.cpp->packageAndResponse->line:75=[requestHandle开始回复数据]
+DEBUG:src/MysqlAgent.cpp->packageAndResponse->line:84=[response->m_msglen:34]
+DEBUG:src/NetConnection.cpp->sendMsg->line:92=[正在执行SendMsg]
+DEBUG:src/NetConnection.cpp->sendMsg->line:97=[本次发送数据，是否激活写事件：1]
+DEBUG:src/NetConnection.cpp->sendMsg->line:116=[当前的数据为:2,34]
+DEBUG:src/NetConnection.cpp->sendMsg->line:117=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8192,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8188,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8184,需要扩容的大小：34]
+DEBUG:src/NetConnection.cpp->sendMsg->line:128=[当前即将写的写缓冲区的内存情况为：m_readPos：0，m_writePos：42，getReadSize()：42，getWriteSize()：8150，data：]
+DEBUG:src/NetConnection.cpp->sendMsg->line:134=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:108=[正在处理任务,当前一共有1个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:138]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/MsgRouter.cpp->call->line:34=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:133=[readFromBuffer正在执行，size：4, getReadSize:10]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:133=[readFromBuffer正在执行，size：4, getReadSize:6]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:1, this->m_msglen:2]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：18，读缓冲区的写指针为：20]
+DEBUG:src/Message.cpp->getRequest->line:102=[解析到的数据为 ,大小为：2]
+DEBUG:src/Message.cpp->getRequest->line:103=[MsgBody,读缓冲区的读指针为：20，读缓冲区的写指针为：20]
+DEBUG:src/Message.cpp->analyze->line:29=[当前数据解析成功,msgid：1，msglen：2，m_data  ]
+DEBUG:src/Message.cpp->analyze->line:30=[Response,读缓冲区的读指针为：20，读缓冲区的写指针为：20]
+DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：1]
+DEBUG:src/MsgRouter.cpp->call->line:32=[userData的地址：0]
+DEBUG:src/MysqlAgent.cpp->requestHandle->line:32=[requestHandle开始执行]
+DEBUG:src/MysqlAgent.cpp->packageAndResponse->line:75=[requestHandle开始回复数据]
+DEBUG:src/MysqlAgent.cpp->packageAndResponse->line:84=[response->m_msglen:0]
+DEBUG:src/NetConnection.cpp->sendMsg->line:92=[正在执行SendMsg]
+DEBUG:src/NetConnection.cpp->sendMsg->line:97=[本次发送数据，是否激活写事件：0]
+DEBUG:src/NetConnection.cpp->sendMsg->line:116=[当前的数据为:2,0]
+DEBUG:src/NetConnection.cpp->sendMsg->line:117=[m_wbuffer->getReadSize():42]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8150,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8146,需要扩容的大小：4]
+DEBUG:src/NetConnection.cpp->sendMsg->line:123=[数据写入写缓冲区失败，写数据大小为：0]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:133=[readFromBuffer正在执行，size：8, getReadSize:50]
+DEBUG:src/MsgRouter.cpp->call->line:34=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：138的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树108有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/NetConnection.cpp->processWrite->line:57=[开始组织数据并响应，预响应的消息为 
+        127.0.0.1
+
+                        127.0.0.1
+
+                                   DEBUG:src/Buffer.cpp->writeBufferToSocket->line:372=[本次写到socket的字节数为：42]
+DEBUG:src/NetConnection.cpp->processWrite->line:79=[本次发送的字节大小为：42]
+DEBUG:src/NetConnection.cpp->processWrite->line:83=[正在关闭写事件]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:108=[正在处理任务,当前一共有1个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:138]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：138的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树108有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/NetConnection.cpp->processRead->line:21=[正在读fd：138发来的消息并解析]
+可以发现，[response->m_msglen:0]是0，（连续两个请求的第一个请求已经在缓冲区了，第二个请求查询的结果长度为0，所以第二次请求直接把第一次请求的缓冲区的头8个字节读出来了，导致客户端读取数据解析异常）
+这个时候需要优化发送字节为0的问题了，具体如下：
+int Buffer::copyData(const char* start, int size)
+{
+	//在写mysql的时候发现，结果为0还是很常见的，不能直接就不发了
+	if (start == nullptr  || size < 0) {
+		return -1;
+	}
+	if (size == 0) {
+		return 0;
+	}
+	resizeBuffer(size);
+	memcpy(m_data + m_writePos, start, size);
+	return size;
+}
+
+//注意这里由于可以扩充，所以可以不判断数据的大小是否很大
+	//返回-1代表参数有问题
+	//返回0 代表实际写入的字节（这个是正常的，因为很多时候查的没有这个东西，需要返回0）
+	//返回大于0，代表实际写入的字节
+	int writed = copyData(data, size);
+	if (writed >= 0) {
+		m_writePos += writed;
+		return writed;
+	}
+	return writed;
+
+
+if (m_wbuffer->writeToBuffer(m_response->m_data, m_response->m_msglen) < 0) {
+			Debug("数据写入写缓冲区失败，写数据大小为：%d", m_response->m_msglen);
+			m_wbuffer->readFromBuffer(nullptr, MSG_HEAD_LEN, false);
+			return -1; //代表当前任务执行失败
+		}
+改
+if (m_wbuffer->writeToBuffer(m_response->m_data, m_response->m_msglen) < 0) {
+			Debug("数据写入写缓冲区失败，写数据大小为：%d", m_response->m_msglen);
+			//注意这里需要倒着读，因为可能前面的第一个包正常，第二个包不正常，那你不可能从头读，而是从尾巴还原
+			//m_wbuffer->readFromBuffer(nullptr, MSG_HEAD_LEN, false);
+			m_wbuffer->m_writePos -= MSG_HEAD_LEN;
+			if (m_wbuffer->m_writePos < 0)m_wbuffer->m_writePos = 0;
+			return -1; //代表当前任务执行失败
+		}
+可以看到只有数据小于0的时候，才会读出来数据，并且不会重头读取，而是从后面读取（倒着读）
+//一开始我还怀疑string存放二进制然后使用size的时候大小对不上
+这个问题还解决了crt乱码的问题，就是把linux模式设置为ansi或者dumb模式
+
+10、这是个很有价值的bug，主要是每次这边接受到完整的数据后，在整合到routerMap的时候，发现接受到的是3个，整合完后就是一个，然后通过打印日志的方式，发现在建立TempMap的时候，第一次能插进去，第二次就返回0了，然后在网上搜到相关的东西
+发现是比较规则的问题，我的比较规则一开始是：
+class HostCmp {
+public:
+	bool operator()(const HostInfo& left, const HostInfo& right) {
+		return left.serviceCondition > right.serviceCondition;
+	}
+};
+后来改成class HostCmp {
+public:
+	bool operator()(const HostInfo& left, const HostInfo& right) {
+		return left.serviceCondition >= right.serviceCondition;
+	}
+};
+就可以了，网上说的是需要遵循严格弱比较关系，而且在网上发现可以不使用仿函数，重载小于号（必须是小于号）也可以，这个bug还是很关键的，不过暂时还没搞懂
+
+下面是日志
+===========
+当前收到：
+modid:1
+ip:127.0.0.1    port:10001
+ip:127.0.0.1    port:10002
+ip:127.0.0.1    port:10004
+当前Map：
+routerMap.size():%d2
+key_set.second.size():%d0
+key_set.second.size():%d1
+ip:127.0.0.1    port:10001      serviceCondition:0
+responseData.host_size():3
+host.ip127.0.0.1host.port10001host.serviceCondition0
+host.ip127.0.0.1host.port10002host.serviceCondition0
+host.ip127.0.0.1host.port10004host.serviceCondition0
+DEBUG:src/LbAgent.cpp->udpateRouterMap->line:104=[DEBUG:./include/LbAgent.h->operator==->line:20=[ip == obj.ip && port == obj.port:1]
+routerMap[modid] != tempRouterMap[modid]:0]
+DEBUG:src/LbAgent.cpp->udpateRouterMap->line:105=[routerMap.find(modid) == routerMap.end():0]
+DEBUG:./include/LbAgent.h->operator==->line:20=[ip == obj.ip && port == obj.port:1]
+===========
+更新后Map：
+routerMap.size():%d2
+key_set.second.size():%d0
+key_set.second.size():%d1
+ip:127.0.0.1    port:10001      serviceCondition:0
+===========
+
+改完之后就正常了
+===========
+当前收到：
+modid:1
+ip:127.0.0.1    port:10001
+ip:127.0.0.1    port:10002
+ip:127.0.0.1    port:10004
+ip:127.0.0.1    port:10003
+当前Map：
+routerMap.size():%d2
+key_set.second.size():%d0
+key_set.second.size():%d3
+ip:127.0.0.1    port:10004      serviceCondition:0
+ip:127.0.0.1    port:10002      serviceCondition:0
+ip:127.0.0.1    port:10001      serviceCondition:0
+responseData.host_size():4
+host.ip127.0.0.1host.port10001host.serviceCondition0
+flags1
+host.ip127.0.0.1host.port10002host.serviceCondition0
+flags1
+host.ip127.0.0.1host.port10004host.serviceCondition0
+flags1
+host.ip127.0.0.1host.port10003host.serviceCondition0
+flags1
+DEBUG:src/LbAgent.cpp->udpateRouterMap->line:105=[routerMap[modid] != tempRouterMap[modid]:1]
+DEBUG:src/LbAgent.cpp->udpateRouterMap->line:106=[routerMap.find(modid) == routerMap.end():0]
+DEBUG:src/LbAgent.cpp->udpateRouterMap->line:110=[正在交换routerMap和tempRouterMap]
+===========
+更新后Map：
+routerMap.size():%d2
+key_set.second.size():%d0
+key_set.second.size():%d4
+ip:127.0.0.1    port:10003      serviceCondition:0
+ip:127.0.0.1    port:10004      serviceCondition:0
+ip:127.0.0.1    port:10002      serviceCondition:0
+ip:127.0.0.1    port:10001      serviceCondition:0
+===========
+
+11、udp也面临同样的问题，客户端同时发两个包过去，（注意，一定要注意，这个时候应该理解成一个包里有两个请求，udp会认为是一个包，但若是多个客户端连续发包，那么服务器只能一个一个接收）服务器只能处理一个包中的第一个请求，显然不对
+udp客户端日志
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:62=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:402=[正在发消息给：127.0.0.1:10001]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:418=[本次写到socket的字节数为：26]
+DEBUG:src/Udp.cpp->processWrite->line:82=[本次发送的字节大小为：26]
+DEBUG:src/Udp.cpp->processWrite->line:86=[正在关闭写事件]
+一个包8+5 *2 ==26，所以被封装成一个包了
+客户端的部分代码
+ start(Udp* udp, void* userData) {
+	Debug("正在发送数据");
+	GetServerIp(udp, 1);
+	GetServerIp(udp, 2);
+服务器的日志；
+EBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：10的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processRead->line:38=[正在读fd：6发来的消息并解析]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:311=[当前Buf的情况为：，当前读指针：0，当前写指针：0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:81=[更换了更大的内存块：当前内存块的大小为：65536]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:317=[读到socket的数据大小为：26,当前Buf的情况为：，当前读指针：0，当前写指针：26]
+DEBUG:src/Udp.cpp->processRead->line:42=[正在解析数据]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:26]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:22]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:2, this->m_msglen:5]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：8，读缓冲区的写指针为：26]
+DEBUG:src/Message.cpp->getRequest->line:102=[解析到的数据为 大小为：5]
+DEBUG:src/Message.cpp->getRequest->line:103=[MsgBody,读缓冲区的读指针为：13，读缓冲区的写指针为：26]
+DEBUG:src/Message.cpp->analyze->line:49=[当前数据解析成功,msgid：2，msglen：5，m_data ]
+DEBUG:src/Message.cpp->analyze->line:50=[Response,读缓冲区的读指针为：13，读缓冲区的写指针为：26]
+DEBUG:src/MsgRouter.cpp->call->line:61=[当前业务序号：2]
+可以看到确实是读到了26个字节（被当成了一个包）但是并没有处理完读到的数据
+
+12、udp服务器倒是能处理连续的任务了，但是服务器连续回复两个请求时，也就是封装在一个包中，会导致客户端只解析第一个包，后面的解析不了，显然不合理，可能tcp客户端也是这样的
+不对。。。。检查日志发现客户端用的reactor模块是老的。。。。，因为服务器和客户端走的是同一块逻辑，重新make以下就正常了
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:317=[读到socket的数据大小为：26,当前Buf的情况为：，当前读指针：0，当前写指针：26]
+DEBUG:src/Udp.cpp->processRead->line:42=[正在解析数据]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:26]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:22]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:2, this->m_msglen:5]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：8，读缓冲区的写指针为：26]
+DEBUG:src/Message.cpp->getRequest->line:102=[解析到的数据为 大小为：5]
+DEBUG:src/Message.cpp->getRequest->line:103=[MsgBody,读缓冲区的读指针为：13，读缓冲区的写指针为：26]
+DEBUG:src/Message.cpp->analyze->line:49=[当前数据解析成功,msgid：2，msglen：5，m_data ]
+DEBUG:src/Message.cpp->analyze->line:50=[Response,读缓冲区的读指针为：13，读缓冲区的写指针为：26]
+DEBUG:src/MsgRouter.cpp->call->line:61=[当前业务序号：2]
+DEBUG:src/MsgRouter.cpp->call->line:69=[userData的地址：0]
+DEBUG:src/LbAgent.cpp->handleUdpMsg->line:172=[接收到数据，正在处理数据]
+DEBUG:src/LbAgent.cpp->handleUdpMsg->line:177=[已定位到处理函数analyzeRequest]
+DEBUG:src/LbAgent.cpp->analyzeRequest->line:186=[开始反序列化数据]
+DEBUG:src/LbAgent.cpp->analyzeRequest->line:189=[反序列化数据完成]
+DEBUG:src/LbAgent.cpp->analyzeRequest->line:191=[requestType:1]
+DEBUG:src/LbAgent.cpp->returnBaseServer->line:162=[开始执行returnBaseServer]
+DEBUG:src/LbAgent.cpp->returnBaseServer->line:166=[udpServer开始回复数据]
+DEBUG:src/LbAgent.cpp->sendUdpResponse->line:261=[正在执行sendUdpResponse]
+DEBUG:src/LbAgent.cpp->UdpReply->line:244=[正在执行UdpReply]
+DEBUG:src/LbAgent.cpp->UdpReply->line:251=[当前的数据为:3,18
+        127.0.0.1
+DEBUG:src/Udp.cpp->sendMsg->line:108=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:123=[当前的数据为:3,18
+        127.0.0.1
+DEBUG:src/Udp.cpp->sendMsg->line:124=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8192,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8188,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8184,需要扩容的大小：18]
+DEBUG:src/Udp.cpp->sendMsg->line:133=[当前即将写的写缓冲区的内存情况为：m_readPos：0，m_writePos：26，getReadSize()：26，getWriteSize()：8166，data：]
+DEBUG:src/Udp.cpp->sendMsg->line:139=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:85=[正在唤醒子线程]
+DEBUG:src/LbAgent.cpp->analyzeRequest->line:195=[数据处理完成]
+DEBUG:src/MsgRouter.cpp->call->line:71=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:55=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:13]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:9]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:2, this->m_msglen:5]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：21，读缓冲区的写指针为：26]
+DEBUG:src/Message.cpp->getRequest->line:102=[解析到的数据为 ：5]
+DEBUG:src/Message.cpp->getRequest->line:103=[MsgBody,读缓冲区的读指针为：26，读缓冲区的写指针为：26]
+DEBUG:src/Message.cpp->analyze->line:49=[当前数据解析成功,msgid：2，msglen：5，m_data 
+
+                                                                                         DEBUG:src/Message.cpp->analyze->line:50=[Response,读缓冲区的读指针为：26，读缓冲区的写指针为：26]
+DEBUG:src/MsgRouter.cpp->call->line:61=[当前业务序号：2]
+DEBUG:src/MsgRouter.cpp->call->line:69=[userData的地址：0]
+DEBUG:src/LbAgent.cpp->handleUdpMsg->line:172=[接收到数据，正在处理数据]
+DEBUG:src/LbAgent.cpp->handleUdpMsg->line:177=[已定位到处理函数analyzeRequest]
+DEBUG:src/LbAgent.cpp->analyzeRequest->line:186=[开始反序列化数据]
+DEBUG:src/LbAgent.cpp->analyzeRequest->line:189=[反序列化数据完成]
+DEBUG:src/LbAgent.cpp->analyzeRequest->line:191=[requestType:2]
+DEBUG:src/LbAgent.cpp->sendUdpResponse->line:261=[正在执行sendUdpResponse]
+DEBUG:src/LbAgent.cpp->UdpReply->line:244=[正在执行UdpReply]
+DEBUG:src/LbAgent.cpp->UdpReply->line:251=[当前的数据为:3,2]
+DEBUG:src/Udp.cpp->sendMsg->line:108=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:123=[当前的数据为:3,2]
+DEBUG:src/Udp.cpp->sendMsg->line:124=[m_wbuffer->getReadSize():26]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8166,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8162,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8158,需要扩容的大小：2]
+DEBUG:src/Udp.cpp->sendMsg->line:133=[当前即将写的写缓冲区的内存情况为：m_readPos：0，m_writePos：36，getReadSize()：36，getWriteSize()：8156，data：]
+DEBUG:src/LbAgent.cpp->analyzeRequest->line:199=[数据处理完成]
+DEBUG:src/MsgRouter.cpp->call->line:71=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:55=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/Udp.cpp->processRead->line:58=[读事件是否开启；1]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:311=[当前Buf的情况为：，当前读指针：26，当前写指针：26]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[扩充Buf大小，将未读区域移动到开头的位置]
+当前不可读
+read: Resource temporarily unavailable
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：6的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/EventLoop.cpp->readMyData->line:102=[已被唤醒,主线程说：该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:108=[正在处理任务,当前一共有1个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:6]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：4的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:402=[正在发消息给：127.0.0.1:38576]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:418=[本次写到socket的字节数为：36]
+DEBUG:src/Udp.cpp->processWrite->line:90=[本次发送的字节大小为：36]
+DEBUG:src/Udp.cpp->processWrite->line:94=[正在关闭写事件]
+
+
+
+
+
+
+注意，下面是在写lb服务器的转发私聊消息和群消息时增加的一些有价值的bug，很多很多都是类型不匹配，.和->不分，调用不匹配问题，等很基本的问题
+13、关于消息缓冲机制的设计，遇到一些困难，就是关于编译期和运行期的问题，这个在源文件有，这里不记录了
+14、这是在lb转发逻辑的时候碰到的reactor的bug，我把对应cpp文件的注释复制过来
+//udp不能简单的判断 getReadSize==0就决定是否开启写事件
+	//因为在连续的发送udp包给不同的主机的时候，会存在地址覆盖的问题（TCP因为只能是一对一，所以不存在覆盖的问题）
+	//但是udp不一样，比如上层业务层在收到一个包（也可能没有收到，可能是主动发包的），然后会从wait那里出来执行预先注册好的业务函数
+	//而在业务函数那里，如果需要不断地执行sendMsg发给不同地主机（这个时候地址就是udp属性的addr），
+	// 但是注意，sendMsg只负责将数据写到缓冲区，至于数据的发送需要等待业务函数执行完回到wait那里才能检测到写事件，才能发送
+	//一定要注意，在执行完这个业务函数之前，他是不会回到wait那里的，也就是即使对端发来数据，那也不会处理事件，因为根本没在wait那里
+	// （这里要清楚如果是其他线程调用sendMsg，那么如果写缓冲区没有数据缓冲，会立马往自己的channel写，唤醒udp的wait，然后往对端写数据
+	// 如果有写数据，一样，不会唤醒wait，而是放到写缓冲区就执行下一个sendMsg了，如果是udp自己的线程连续调用sendMsg，也是一样的，也就是
+	// 如果写缓冲区没有数据缓冲，会立马往自己的channel写，但是当前线程还没有到wait，而是继续执行下一个sendMsg（这个时候就不会往
+	// 自己的channel写数据了），当所有的sendMsg执行完之后，才会回到wait，然后检测，立马响应写事件）
+	//但是业务函数那里需要执行多条sendMsg，这个时候后面的地址就覆盖了前面的地址，导致只能发给一个地址
+	//这怎么处理，其实也挺好处理，第一个将原来的地址改为地址队列，那么我写缓冲区的数据准备好了，地址队列也准备好了，一一对应的取就行了
+	//第二种待发送消息队列，sendMsg在发送第二个消息的时候，发现当前缓冲区有数据，并且第二个发送的数据和第一个的地址不一样，
+	//那么就把这个消息和地址压到队列中，等到第一个消息发送完毕，再从队列弹出
+	//第三个就是在udp类中增加同步信号量，业务层那里每次sendMsg之后，就会阻塞等待（如果当前线程一阻塞，但是wait会有事件触发），当将数据发送到对端之后，然后唤醒
+	//第三个是无效的，因为本质上只有一个线程，你让他休眠，他醒来之后还是会回到对应的即将要执行的位置，可以将udp的sendMsg放到一个线程里，那么就可以用第三种方式
+	//但是我最终还是打算采用第一种方式，因为比较简单
+	//但是读的包也需要记录包的地址，这咋办，感觉需要一个单独的地址和一个队列，单独的地址用来存放默认接收和发送（一个主机）的，
+	//而（连续接收（不同主机）是不存在的，因为我每次读一个包出来，然后就去执行业务逻辑了，也就是我这边是缓冲区是读出来一个包然后立马处理掉
+	//）和发给不同的主机需要使用队列（也就是这一个包在处理业务时需要发送多个包）那processWrite怎么选择队列还是变量呢，
+	//感觉还是只用一个队列比较好，也就是读包的时候，我需要将地址压入队列，然后在处理这个包的时候，必须要消耗掉这个包的地址（也就是如果你发包
+	//业务层就不用压入地址了，但是如果发包发的不是对应的udp，那么你需要弹出当前地址，然后再压入新的地址，这还挺麻烦的）
+	//可以采用读地址和写地址分离，读地址只需要一个变量，写地址需要一个队列，我一定要自始至终保证队列地址和写缓冲区的包的一个对应关系
+	//上层即使回复消息给读地址读到的变量，也需要将这个变量的地址押入到队列中，这样就完美解决了问题，所以之前写的关于udp的发送接收过程都要进行小幅度更改
+这是我分析出来的，不是打印日志出来的，所以改动一下reactor的udp部分
+
+15src/LbAgent.cpp: 在构造函数‘LbAgent::LbAgent(const char*, short unsigned int, const char*, short unsigned int)’中:
+src/LbAgent.cpp:16:133: 错误：对‘TcpClient::addMsgRouter(int, std::_Bind_helper<false, void (LbAgent::*)(TcpClient*, void*), LbAgent* const, const std::_Placeholder<1>&, const std::_Placeholder<2>&>::type)’的调用没有匹配的函数
+   std::bind(&LbAgent::requestHandle<TcpClient, mysqlService::GetRouterResponse>, this, std::placeholders::_1, std::placeholders::_2));
+                                                                                                                                     ^
+src/LbAgent.cpp:16:133: 附注：备选是：
+In file included from ./include/LbAgent.h:5:0,
+                 from src/LbAgent.cpp:1:
+../reactor/include/TcpClient.h:21:7: 附注：bool TcpClient::addMsgRouter(int, TcpMsgRouter::msgCallBack, void*)
+  bool addMsgRouter(int msgid, TcpMsgRouter::msgCallBack callBcak, void* userData = nullptr);
+       ^
+../reactor/include/TcpClient.h:21:7: 附注：  no known conversion for argument 2 from ‘std::_Bind_helper<false, void (LbAgent::*)(TcpClient*, void*), LbAgent* const, const std::_Placeholder<1>&, const std::_Placeholder<2>&>::type {aka std::_Bind<std::_Mem_fn<void (LbAgent::*)(TcpClient*, void*)>(LbAgent*, std::_Placeholder<1>, std::_Placeholder<2>)>}’ to ‘TcpMsgRouter::msgCallBack {aka std::function<void(NetConnection*, void*)>}’
+源码是
+tcpClient->addMsgRouter((int)mysqlService::ID_GetRouterResponse, 
+		std::bind(&LbAgent::requestHandle<TcpClient, mysqlService::GetRouterResponse>, this, std::placeholders::_1, std::placeholders::_2));
+注意addMsgRouter的第二个参数是using msgCallBack = std::function<void(NetConnection* conn, void* userData)>;，也就是绑定的时候，类型要一致父子关系也不行
+改完之后没问题了，但是
+src/LbAgent.cpp:17:136:   required from here
+src/LbAgent.cpp:61:2: 错误：从类型‘NetConnection*’到类型‘TcpClient*’的转换无效 [-fpermissive]
+  DealingRequest(conn, requestData);
+  ^
+src/LbAgent.cpp:102:6: 错误：  初始化‘void LbAgent::DealingRequest(TcpClient*, std::shared_ptr<mysqlService::GetRouterResponse>)’的实参 1 [-fpermissive]
+ void LbAgent::DealingRequest(TcpClient* tcpClient, std::shared_ptr<mysqlService::GetRouterResponse> responseData)
+      ^
+由于最顶层都是父类指针，所以底层函数也改成父类指针，这样就没问题了
+其他的注册函数也有类似的问题，也都改成父类指针了
+
+16，	std::map<HostInfo, lbService::RepostMsgResponseTo, HostCmp>responses;这个东西自定义类型一定要有比较函数，否则会有一大长串的错误
+
+17、在写关于lb服务器的转发消息的测试用例时，需要更新set中的人数，但是发现之前的set比较函数有问题，之前的set是（注意，在对应的文件中也有一些注释）
+return left.serviceCondition >= right.serviceCondition;
+也就是他是根据serviceCondition判断两个hostInfo是否相等的，（可以看对应文件的注释），也就是说如果两个ip和端口和serverCondition都一样，那么他还是认为不一样，
+这个set的关注度全都放在serviceCondition上了，显然不合适
+注意，这里的set根本不用HostInfo中的==，
+改成如下就正常了
+	if (left == right) { //结构体中重载了==
+			return false;   //如果两者ip和端口相等，那我就认为是相等的，这个时候你就不该插进去，或者说find找到了目标
+		}
+		else {
+			//如果二者不相等，那么怎么排序呢？特别是serviceCondition相等的情况下
+			return left.serviceCondition <= right.serviceCondition;  //这个必须要有=号，也就是如果两者都不想等了，那么肯定要插进去，>=可以保证都能插进去
+			//注意<=会按照从小到大排序，>=会从大到小排序，>和<则会剔除一部分
+		}
+18、写测试转发消息请求的时候碰到了一个很奇怪的现象
+这是lbServer测试0.2的一个log
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：4的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:./client.cpp->main->line:171=[执行到这]
+DEBUG:src/EventLoop.cpp->EventLoop->line:11=[开始初始化evLoop]
+DEBUG:src/Udp.cpp->run->line:270=[正在执行启动函数]
+DEBUG:./client.cpp->start->line:152=[正在发送数据]
+DEBUG:./client.cpp->GetServerIp->line:48=[执行到这]
+DEBUG:./client.cpp->GetServerIp->line:52=[执行到这]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:108=[正在处理任务,当前一共有1个任务]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:117=[正在添加fd：10到反应堆：-1]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:46=[epoll成功添加读事件fd:10]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/EventLoop.cpp->EventLoop->line:31=[evLoop初始化完成]
+DEBUG:src/Udp.cpp->UdpClient->line:227=[正在执行UdpClient]
+DEBUG:src/Buffer.cpp->Buffer->line:29=[获得一块内存，当前内存块的大小为：65535DEBUG:src/Udp.cpp->sendMsg->line:119=[]
+DEBUG:src/Buffer.cpp->Buffer->line:29=[获得一块内存，当前内存块的大小为：65535]
+正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:158=[当前的数据为:1,4]
+DEBUG:src/Udp.cpp->sendMsg->line:159=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：65535,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：65531,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：65527,需要扩容的大小：4]
+DEBUG:src/Udp.cpp->sendMsg->line:168=[当前即将写的写缓冲区的内存情况为：m_readPos：0，m_writePos：12，getReadSize()：12，getWriteSize()：65523，data：]
+DEBUG:src/Udp.cpp->sendMsg->line:176=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:108=[DEBUG:src/EventLoop.cpp->addTask->line:85=[正在唤醒子线程正在处理任务,当前一共有1个任务]
+[tony@heihei lbAgentV0.2]$ 
+
+这是部分源码
+//请求一个基础服务器地址或者流媒体服务器地址
+void GetServerIp(Udp* udp, int mode, int uid) {  //1代表请求基础ip，2代表请求流媒体ip
+	lbService::GetServerRequest responseData;
+	responseData.set_modid(mode);  //1代表请求基础ip，2代表请求流媒体ip
+	responseData.set_id(uid);  //客户uid
+	udpSendMsg<lbService::GetServerRequest>(udp, (int)lbService::ID_GetServerRequest, &responseData, &udp->m_recvAddr);
+	Debug("执行到这");
+}
+。。。。。。
+//start
+//using hookCallBack = std::function<int(Udp* udp, void* userData)>;
+int start(Udp* udp, void* userData) {
+	Debug("正在发送数据");
+	GetServerIp(udp, 1, 1); //用户1登录
+	GetServerIp(udp, 1, 2); //用户2登录
+	GetServerIp(udp, 1, 3); //用户3登录
+	//GetServerIp(udp, 2, 1);
+}
+int main() {
+	//连接mysql的tcpclient
+	TcpClient* mysqlClient = new TcpClient("127.0.0.1", 10000);  //连接msyql服务器
+	mysqlClient->connectServer();
+	//std::thread mc(&TcpClient::EventLoop::run, mysqlClient);  //mysqlClient->m_evloop->run();  错误
+	std::thread mc(&TcpClient::run, mysqlClient);  //mysqlClient->run();
+
+	//验证lbAgent是否能正常返回数据
+	UdpClient client("127.0.0.1", 10001);  //给lb服务器发消息
+	client.addMsgRouter((int)lbService::ID_GetServerResponse, HandleServerIp, mysqlClient);
+	client.setConnStart(start);
+	//当前客户端放到一个线程里工作，下面几个也类似
+	std::thread realClient(&UdpClient::run, client);
+	Debug("执行到这");
+	//两台假装基础服务器的udp,用来接收lb服务器的转发的消息
+	UdpClient baseServer1("127.0.0.1", 10010);
+	UdpClient baseServer2("127.0.0.1", 10011);
+	//注册接收转发响应的函数
+	std::thread bs1(&UdpClient::run, baseServer1);
+	std::thread bs2(&UdpClient::run, baseServer2);
+	Debug("执行到这");
+	//必须要有join函数或者detach，否则主线程执行完就结束了，其他的线程也结束了，所有的函数都不会执行（除了start函数外，他也只负责写到写缓冲区里）
+	//注意，这里必须要用detach，而不能用join，因为join执行完函数就结束了
+	mc.join();
+	Debug("执行到这");
+	realClient.join();
+	Debug("执行到这");
+	bs1.join();
+	Debug("执行到这");
+	bs2.join();
+	Debug("执行到这");
+}
+也就是执行	std::thread realClient(&UdpClient::run, client);之后，就直接退出了，很诡异，而且如果不是多线程的情况下，非常正常，（注意，start函数是在run里执行的）
+注意到，log中有一句=[正在唤醒子线程正在处理任务,当前一共有1个任务]
+可是std::thread realClient(&UdpClient::run, client);这个线程realClient就是他自己呀，但是别忘记UdpClient client("127.0.0.1", 10001);  //给lb服务器发消息是再主线程里面完成的，也就是主线的id已经被记录到client里面了，而这个唤醒操作却是在子线程执行的，因为run是子线程在执行，（所以如果唤醒，会唤醒这个evloop的run所在的线程，也就是他自己。。。。。）
+然后打印了好多日志，最终定位在执行start函数时，发送第一个消息时，需要打开写事件，然后添加任务的时候，因为上面创建和执行不在一个线程的原因，导致需要唤醒，但是执行到
+assert(evloop);
+	std::string buf = "该起来干活了";
+	//父进程向写端中写数据
+	Debug("主线程正要唤醒子线程");
+	write(evloop->m_pipefd[1], buf.c_str(), buf.size());
+write的时候，就停止了。。。。弄了好久呀。。。。
+然后通过gdb调试，发现
+Program received signal SIGPIPE, Broken pipe.
+0x00007ffff77216fd in write () at ../sysdeps/unix/syscall-template.S:81
+81      T_PSEUDO (SYSCALL_SYMBOL, SYSCALL_NAME, SYSCALL_NARGS)
+写不进去。。。。。。。
+而且发现主线程在初始化udpClient对象的时候也需要addTask，但是那里就可以顺利执行任务，因为那里没有唤醒
+所以为啥子线程唤醒时往里写数据就会出现问题呢（lb服务器其实也有udpClient，那个主线程创建，子线程执行，但是那个一点问题都没有）
+
+而且多次执行还会发现错误不一样，但是都是同一个地方出问题
+Program received signal SIGSEGV, Segmentation fault.
+然后我又尝试了几次gdb，发现错误都是在那一个地方，但是出现的原因不一样，而且最后一次出错的地方的log是：
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:46=[epoll成功添加读事件fd:14]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:155=[任务处理成功]
+DEBUG:src/EventLoop.cpp->EventLoop->line:31=[evLoop初始化完成]
+DEBUG:src/Udp.cpp->UdpClient->line:227=[正在执行UdpClient]
+DEBUG:src/Buffer.cpp->Buffer->line:29=[获得一块内存，当前内存块的大小为：65535]
+*** Error in `/home/tony/myprojects/MovieHub/lbAgent/tests/lbAgentV0.2/./client': corrupted double-linked list: 0x000000000064ab70 ***
+[Switching to Thread 0x7ffff6323700 (LWP 13615)]
+
+Breakpoint 1, EventLoop::wakeupThread (this=this@entry=0x64b7f0, evloop=evloop@entry=0x64b7f0) at src/EventLoop.cpp:97
+97              Debug("主线程正要唤醒子线程");
+
+看到errorIn了吗，然后上网搜索了一下，大概率是我的测试那里写的有问题，而且是指针问题，然后检查参数的时候突然看到下面的：
+
+tmd。。。。。非常无语的一个小错误，
+	TcpClient* mysqlClient = new TcpClient("127.0.0.1", 10000);  //连接msyql服务器
+	mysqlClient->connectServer();
+	//std::thread mc(&TcpClient::EventLoop::run, mysqlClient);  //mysqlClient->m_evloop->run();  错误
+	std::thread mc(&TcpClient::run, mysqlClient);  //mysqlClient->run();
+
+	//验证lbAgent是否能正常返回数据
+	UdpClient client("127.0.0.1", 10001);  //给lb服务器发消息
+	client.addMsgRouter((int)lbService::ID_GetServerResponse, HandleServerIp, mysqlClient);
+	client.setConnStart(start);
+	//当前客户端放到一个线程里工作，下面几个也类似
+	std::thread realClient(&UdpClient::run, client);
+看看最后一个clinet怎么传递的。。。。。直到写管道的时候，才调用发现是错误的。。。。。因为后面的参数都是传递给线程函数run的，而run会有一个隐藏的函数，
+所以第二个位置应该传递这个对象的地址，所以。。。。。。
+但是底层依然有一个不太理想的状态，就是当对象创建在主线程的时候，会导致当前evloop记住的是主线程的id，而当子线程运行的时候，每次往任务队列上放置任务都会走一趟唤醒操作，但其实这些都可以省掉的
+，后续有机会可以更改一下
+
+19、
+key_set.second.size():%d2
+ip:127.0.0.1    port:10011      serviceCondition:1
+ip:127.0.0.1    port:10010      serviceCondition:2
+key_set.second.size():%d2
+ip:127.0.0.1    port:11001      serviceCondition:0
+ip:127.0.0.1    port:11000      serviceCondition:0
+responseData->host_size():2
+DEBUG:./include/LbAgent.h->operator==->line:180=[ip == obj.ip && port == obj.port:0]
+DEBUG:./include/LbAgent.h->operator==->line:180=[ip == obj.ip && port == obj.port:0]
+插入host.ip：127.0.0.1host.port：10010host.serviceCondition：0
+插入结果flags：1
+DEBUG:./include/LbAgent.h->operator==->line:180=[ip == obj.ip && port == obj.port:1]
+DEBUG:./include/LbAgent.h->operator==->line:180=[ip == obj.ip && port == obj.port:1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:142=[正在给serviceCondition还原数据]
+插入host.ip：127.0.0.1host.port：10011host.serviceCondition：1
+DEBUG:./include/LbAgent.h->operator==->line:180=[ip == obj.ip && port == obj.port:0]
+DEBUG:./include/LbAgent.h->operator==->line:180=[ip == obj.ip && port == obj.port:0]
+DEBUG:./include/LbAgent.h->operator==->line:180=[ip == obj.ip && port == obj.port:0]
+插入结果flags：1
+DEBUG:src/LbAgent.cpp->DealingRequest->line:153=[DEBUG:./include/LbAgent.h->operator==->line:180=[ip == obj.ip && port == obj.port:0]
+routerMap[modid] != tempRouterMap[modid]:1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:154=[routerMap.find(modid) == routerMap.end():0]
+DEBUG:./include/LbAgent.h->operator==->line:180=[ip == obj.ip && port == obj.port:0]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:158=[正在交换routerMap和tempRouterMap]
+===========
+更新后Map：
+routerMap.size():%d2
+key_set.second.size():%d2
+ip:127.0.0.1    port:10010      serviceCondition:0
+ip:127.0.0.1    port:10011      serviceCondition:1
+当roumap定时更新后，会把负载情况抹除掉一部分，初步怀疑是
+	hostSet::iterator target; // 不能定义在if里面
+		Debug("当前routerMap中是否有当前server，%d", routerMap[modid].find(host) != routerMap[modid].end());
+		//如果routerMap中有当前server信息，那说明需要更新响应的serviceCondition，否则则说明是新增的主机，设置为0即可
+		if (routerMap.find(modid) != routerMap.end() &&   //这个条件是为了防止routerMap[modid]插入无效元素的，[]会直接插入元素，如果当前模块不存在，直接走else
+			(target = routerMap[modid].find(host)) != routerMap[modid].end()) {  //这个会使用<而不是实现的==
+			Debug("正在给serviceCondition还原数据");
+			host.serviceCondition = target->serviceCondition;
+		}
+这里的if条件
+通过日志可以发现，比的对·根本不是自己想象中，而是都和对应set中的第一个元素相比。。。。。。只会和map对应的set的第一个元素比较。。不对就是假。。。。
+当前收到：
+modid:1
+ip:127.0.0.1    port:10010
+ip:127.0.0.1    port:10011
+当前Map：
+routerMap.size():%d2
+key_set.second.size():%d2
+ip:127.0.0.1    port:10011      serviceCondition:1
+ip:127.0.0.1    port:10010      serviceCondition:2
+key_set.second.size():%d2
+ip:127.0.0.1    port:11001      serviceCondition:0
+ip:127.0.0.1    port:11000      serviceCondition:0
+responseData->host_size():2
+DEBUG:src/LbAgent.cpp->DealingRequest->line:140=[DEBUG:./include/LbAgent.h->operator==->line:181=[ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:0]
+DEBUG:./include/LbAgent.h->operator==->line:181=[ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10011; serviceCondition:0, obj.serviceCondition:1]
+当前routerMap中是否有当前server，0]
+
+最终通过网上发现是因为set中自定义排序规则的问题：
+如果你不对结构体中某个值进行排序，那么查找的时候，不会考虑这个值是否相等，所以需要对所有的值都排一下序，改了两个版本，一共有三个版本，
+#if 0
+		if (left == right) { //结构体中重载了==
+			return false;   //如果两者ip和端口相等，那我就认为是相等的，这个时候你就不该插进去，或者说find找到了目标
+		}
+		else {
+			//如果二者不相等，那么怎么排序呢？特别是serviceCondition相等的情况下
+			return left.serviceCondition <= right.serviceCondition;  //这个必须要有=号，也就是如果两者都不想等了，那么肯定要插进去，>=可以保证都能插进去
+			//注意<=会按照从小到大排序，>=会从大到小排序，>和<则会剔除一部分
+		}
+#endif
+#if 0
+		if (left == right) {
+			return left.serviceCondition < right.serviceCondition;   //这里不能有等号，因为如果有等号就会导致三个相同，也认为不相同
+		}
+		//这个时候一定要在对ip和port进行比较，否则set根本无法查找元素
+		//但是不相等的话，我还是想对serviceCondition进行排序，上面这种也只有相等的条件下才会对serviceCondition进行排序
+		if (left.ip == right.ip) {
+			return left.port < right.port;
+		}
+		return left.ip < right.ip;
+	}
+#endif
+
+		if (left == right) {
+			return left.serviceCondition < right.serviceCondition;   //这里不能有等号，因为如果有等号就会导致三个相同，也认为不相同
+		}
+		//这个时候一定要在对ip和port进行比较，否则set根本无法查找元素
+		//但是不相等的话，我还是想对serviceCondition进行排序，上面这种也只有相等的条件下才会对serviceCondition进行排序
+		//如果left != right，那么我还是对serveiceCondition进行比较
+		return left.serviceCondition <= right.serviceCondition;
+	}
+第一个版本，找不到想要的元素，第二个版本，不能按照我想要的serviceCondition进行排序，第三个版本可以正常工作
+
+20、在进行消息转发测试的时候，发现
+测试程序log
+DEBUG:src/MsgRouter.cpp->call->line:69=[userData的地址：16d9ea8]
+当前server：client
+epoll成功修改写事件：0， fd:6]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:6]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：4的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+当前要转发的消息类型：1消息来自：1目标组：0
+当前server要发的目标uid：3
+当前server要发目标消息：你好
+DEBUG:src/MsgRouter.cpp->call->line:71=[调用业务回调函数成功]
+测试程序如下：
+
+	//验证lbAgent是否能正常返回数据
+	UdpClient client("127.0.0.1", 10001);  //给lb服务器发消息
+	std::string clinetName("client");
+	client.addMsgRouter((int)lbService::ID_GetServerResponse, HandleServerIp, mysqlClient);
+	client.addMsgRouter((int)lbService::ID_RepostMsgResponseTo, HandleLbRepost, &clinetName[0]);
+	client.setConnStart(start);
+	//当前客户端放到一个线程里工作，下面几个也类似
+	std::thread realClient(&UdpClient::run, &client);
+	//两台假装基础服务器的udp,用来接收lb服务器的转发的消息
+	UdpClient baseServer1("127.0.0.1", 10010);
+	UdpClient baseServer2("127.0.0.1", 10011);
+	//注册接收转发响应的函数
+	std::string server1Name("baseServer1");
+	std::string server2Name("baseServer2");
+	baseServer1.addMsgRouter((int)lbService::ID_RepostMsgResponseTo, HandleLbRepost, &server1Name[0]);
+	baseServer2.addMsgRouter((int)lbService::ID_RepostMsgResponseTo, HandleLbRepost, &server2Name[0]);
+
+	std::thread bs1(&UdpClient::run, &baseServer1);
+	std::thread bs2(&UdpClient::run, &baseServer2);
+可以发现lb服务器发给的目标是源服务器（也就是请求）（这个client既模拟了源服务器的转发请求，更新mysql，和登录反馈，又模拟了客户端获取ip等操作）而不是其他基础服务器（当前server：client）
+然后发现lb服务器端的log日志如下：
+DEBUG:src/Udp.cpp->sendMsg->line:158=[当前的数据为:5,15你好*]
+DEBUG:src/Udp.cpp->sendMsg->line:159=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8108,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8104,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8100,需要扩容的大小：15]
+DEBUG:src/Udp.cpp->sendMsg->line:168=[当前即将写的写缓冲区的内存情况为：m_readPos：84，m_writePos：107，getReadSize()：23，getWriteSize()：8085，data：]
+DEBUG:src/Udp.cpp->sendMsg->line:176=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:85=[正在唤醒子线程]
+DEBUG:src/LbAgent.cpp->packageMsg->line:470=[requestHandle开始回复数据]
+DEBUG:src/Udp.cpp->sendMsg->line:119=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:158=[当前的数据为:6,2]
+DEBUG:src/Udp.cpp->sendMsg->line:159=[m_wbuffer->getReadSize():23]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8085,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8081,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8077,需要扩容的大小：2]
+DEBUG:src/Udp.cpp->sendMsg->line:168=[当前即将写的写缓冲区的内存情况为：m_readPos：84，m_writePos：117，getReadSize()：33，getWriteSize()：8075，data：]
+DEBUG:src/MsgRouter.cpp->call->line:71=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:55=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:32]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:28]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:3, this->m_msglen:8]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：46，读缓冲区的写指针为：70]
+DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为  ,大小为：8]
+DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：54，读缓冲区的写指针为：70]
+DEBUG:src/Message.cpp->analyze->line:49=[当前数据解析成功,msgid：3，msglen：8，m_data   ]
+DEBUG:src/Message.cpp->analyze->line:50=[Response,读缓冲区的读指针为：54，读缓冲区的写指针为：70]
+DEBUG:src/MsgRouter.cpp->call->line:61=[当前业务序号：3]
+DEBUG:src/MsgRouter.cpp->call->line:69=[userData的地址：0]
+DEBUG:src/LbAgent.cpp->requestHandle->line:62=[requestHandle开始执行]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:285=[同步前当前user_server map情况：]
+uid:1   server_ip:127.0.0.1     server_port:10011
+uid:2   server_ip:127.0.0.1     server_port:10010
+uid:3   server_ip:127.0.0.1     server_port:10010
+DEBUG:src/LbAgent.cpp->DealingRequest->line:308=[uid:2登录成功]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:316=[同步后user_server map情况：]
+uid:1   server_ip:127.0.0.1     server_port:10011
+uid:2   server_ip:127.0.0.1     server_port:10010
+uid:3   server_ip:127.0.0.1     server_port:10010
+DEBUG:src/MsgRouter.cpp->call->line:71=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:55=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:16]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:12]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:3, this->m_msglen:8]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：62，读缓冲区的写指针为：70]
+DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为  ,大小为：8]
+DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：70，读缓冲区的写指针为：70]
+DEBUG:src/Message.cpp->analyze->line:49=[当前数据解析成功,msgid：3，msglen：8，m_data   ]
+DEBUG:src/Message.cpp->analyze->line:50=[Response,读缓冲区的读指针为：70，读缓冲区的写指针为：70]
+DEBUG:src/MsgRouter.cpp->call->line:61=[当前业务序号：3]
+DEBUG:src/MsgRouter.cpp->call->line:69=[userData的地址：0]
+DEBUG:src/LbAgent.cpp->requestHandle->line:62=[requestHandle开始执行]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:285=[同步前当前user_server map情况：]
+uid:1   server_ip:127.0.0.1     server_port:10011
+uid:2   server_ip:127.0.0.1     server_port:10010
+uid:3   server_ip:127.0.0.1     server_port:10010
+DEBUG:src/LbAgent.cpp->DealingRequest->line:308=[uid:3登录成功]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:316=[同步后user_server map情况：]
+uid:1   server_ip:127.0.0.1     server_port:10011
+uid:2   server_ip:127.0.0.1     server_port:10010
+uid:3   server_ip:127.0.0.1     server_port:10010
+DEBUG:src/MsgRouter.cpp->call->line:71=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:55=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/Udp.cpp->processRead->line:58=[读事件是否开启；1]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:311=[当前Buf的情况为：，当前读指针：70，当前写指针：70]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[扩充Buf大小，将未读区域移动到开头的位置]
+当前不可读
+read: Resource temporarily unavailable
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：6的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/EventLoop.cpp->readMyData->line:102=[已被唤醒,主线程说：该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:108=[正在处理任务,当前一共有1个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:6]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：4的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:402=[正在发消息给：127.0.0.1:35812]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:418=[本次写到socket的字节数为：33]
+DEBUG:src/Udp.cpp->processWrite->line:100=[本次发送的字节大小为：33]
+DEBUG:src/Udp.cpp->processWrite->line:104=[正在关闭写事件]
+（中间有一部分是其他线程的数据），但是结合源码看：
+	udpSendMsg<lbService::RepostMsgResponseTo>((int)lbService::ID_RepostMsgResponseTo, &responseData, &toAddr);
+		//能连续发两个消息给不同的服务器吗？
+		//这里可以设置给from的消息内容
+		respnoseFrom.set_result(1);
+	}
+	//不管在不在线，这里都已经准备好了回复源服务器的消息
+	udpSendMsg<lbService::RepostMsgResponseFrom>((int)lbService::ID_RepostMsgResponseFrom, &respnoseFrom, &fromAddr);
+会发现两个不同的服务器目标，结果执行完两个send，当成一个包了（第一个包的大小为23，第二个包的大小为10），然后都写到缓冲区之后，然后执行write操作，这时候从头部选择第一个地址，发送出去（第二个地址完全忽略了）（但是还有一个奇怪的原因是队列地址中第一个地址是目标服务器的地址，为啥会发到源服务器上呢），根本原因是第一个send执行完，已经打开了写事件，但是还没来得及回去到wait，又执行了第二个send，所以，如果需要支持连续不同服务器的发送，需要有一个强制执行的操作，就是执行完send之后，强制执行wait，但是这个逻辑似乎有问题，比如刚开始来了两个消息，这个时候我已经得到了这两个事件集合，然后处理第一个事件，处理第一个事件的时候需要连续发送两个消息，这个时候如果发第一个消息强制执行了，那么就回到wait，注意socket都是非阻塞的，（第二个事件还是处于未读状态，也就是socket里面还有数据），这个时候又会处理wait（这个wait的函数栈和第一次的wait栈不一样），然后就会检测到第一次wait到的第二个事件和一个写事件就绪，然后处理处理第二个事件，处理完第二个事件，再处理发送程序，然后再处理第一个事件的第二个send，然后第一个事件处理完，然后读第二个事件的缓冲区，但是这个缓冲区已经没有东西了，当然了这个时候如果读不到，就会直接返回，不读了，然后相当于第二个事件处理完了，这个其实有一点冗余，因为wait成功之后，我应该循环的处理，而不是循环加递归，会导致事件提醒机制不准确，怎么办
+或者是如果强制执行的话，不走wait，而是直接在sendMsg里调用对应的processWrite，上层可以指定是否立即发送数据，如果不是立即发送数据，那么连续发送的包就会发送到同一个对端，这个时候地址队列有很多重复的地址怎么办，而且processWrite只会用到一个地址，导致后面的地址全是错的
+可以通过底层判断，比如突然来了，5个包，分别发送的地址是21123，这个时候sendMsg处理第一个的时候，发现前面没数据，那么我就先按照正常发，然后第二个发现地址不一样了，那么我第二个包写进缓冲区之前需要强制执行write，然后写入第二个包，第二个包也是正常操作（但是注意此时，不需要开启写事件，因为写事件第一次的还在任务队列上呢，或者已经更新到epoll树上了，但是肯定还没有到wait，所以不必要开启），然后第三个包发现地址一样，这个时候不压入地址，而是直接写入数据，第四个包来的时候，发现地址不一样，那么直接强制发送前面的，这个时候地址是正确的（也不需要开启写事件），然后第5个写入前的时候也会强制发送第4个包（不需要开启写事件），然后第5个包等到第一个事件处理完，继续等到所有的事件处理完（如果期间没有发送数据，那么就要等到所有事件处理完，否则某个事件发送之前还是会判断发的地址是否一样，最终会执行第一个包的写事件的回调函数processWrite）
+所以上层是不需要改的，需要改的是sendMsg
+
+上述初步解决了连续发送不同主机的粘包问题，也就是中间发现包不一样会直接强制发送，上层不需要任何改动。但是正如之前提到的一个奇怪的现象那样，他还是会发送给源服务器上，而不是目的服务器上
+
+大致理解了为啥发给源服务器的缘由了
+首先说下lb服务器和测试程序的流程
+测试程序会发一个请求ip的包，一个ip请求的包，一个ip请求的包，（这三个包黏在一起了），然后服务器会响应三个（并且也黏在一起了），然后测试程序收到ip的包之后会模拟源服务器发一个登录成功的包（调用三次响应函数）和一个消息转发请求的包，这一个包的布局是登录成功包，请求转发包，登录成功包，登录成功包，然后lb服务器收到这个包之后会连续处理，那为啥没有改之前，也就是一个地址压入一次的那种的时候为啥会发到源服务器呢，因为lb服务器压入的地址太多了，（压入三个地址，其实只消耗了一个地址）
+，那为啥改了之后还是这样的呢，因为，之前判断条件写成相等的了，导致如果相等，我会强制发，不相等就会黏在一起，然后lb服务器在响应三个的时候前两个都会单独发过去，第三个的时候写入到缓存区，进入到wait，然后检测到最后的4个包（开启的写事件应该在这个读事件之后）然后又开始响应，转发请求的包，因为条件写成不相等会黏在一起，所以就转发请求的就黏到源服务器上了，条件应该改成如下
+auto lastMsgAddr = m_sendAddrQ.back();
+		if ((lastMsgAddr.sin_addr.s_addr != addr.sin_addr.s_addr) || (lastMsgAddr.sin_port != addr.sin_port)) {
+			Debug("正在强制发送消息");
+			processWrite();
+			isPushAddr = true;
+		}
+我是怎么发现问题的呢，打印日志，因为发送地址不相等吗，我就在响应函数那打印地址，在sendMsg那打印地址，在processWrite打印地址，发现在sendMsg那，转发请求的地址就开始变了，然后更密集的打印地址，并且结合之前的log，捋清了发包的逻辑，发现了上述问题
+不过还有一个bug是改成那样之后，最后一个包发不出去了（因为中间如果readsize为空，会申请关闭写事件，这个也要处理一下）
+不过倒数第二个的包，也就是转发你好的包，lb服务器显示已经发出了（发到对端），但是测试程序就没有，妈的。。。。发现是两台模拟的目标服务器定义成client了。。；。。
+UdpClient baseServer1("127.0.0.1", 10010);
+UdpClient baseServer2("127.0.0.1", 10011);
+
+我用linux的命令发了一个包，才发现这个有问题。。。改成server还是不行。。。。
+不过通过log发现
+DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：8]
+当前msgid未注册，已按默认动作处理
+DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:14]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:10]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:8, this->m_msglen:6]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：22，读缓冲区的写指针为：28]
+DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为 ,大小为：6]
+DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：28，读缓冲区的写指针为：28]
+DEBUG:src/Message.cpp->analyze->line:29=[当前数据解析成功,msgid：8，msglen：6，m_data  ]
+DEBUG:src/Message.cpp->analyze->line:30=[Response,读缓冲区的读指针为：28，读缓冲区的写指针为：28]
+DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：8]
+当前msgid未注册，已按默认动作处理
+DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：6的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Buffer.cpp->Buffer->line:18=[获得一块内存，当前内存块的大小为：8192]
+DEBUG:src/Buffer.cpp->Buffer->line:18=[获得一块内存，当前内存块的大小为：8192]
+DEBUG:src/Udp.cpp->UdpServer->line:228=[m_readPos:0, m_writePos:0]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:108=[正在处理任务,当前一共有1个任务]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:117=[正在添加fd：14到反应堆：-1]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:46=[epoll成功添加读事件fd:14]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/EventLoop.cpp->EventLoop->line:11=[开始初始化evLoop]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:108=[正在处理任务,当前一共有1个任务]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:117=[正在添加fd：16到反应堆：-1]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:46=[epoll成功添加读事件fd:16]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/EventLoop.cpp->EventLoop->line:31=[evLoop初始化完成]
+DEBUG:src/Buffer.cpp->Buffer->line:18=[获得一块内存，当前内存块的大小为：8192]
+DEBUG:src/Buffer.cpp->Buffer->line:18=[获得一块内存，当前内存块的大小为：8192]
+DEBUG:src/Udp.cpp->UdpServer->line:228=[m_readPos:0, m_writePos:0]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:108=[正在处理任务,当前一共有1个任务]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:117=[正在添加fd：18到反应堆：-1]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:46=[epoll成功添加读事件fd:18]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/MsgRouter.cpp->submit->line:52=[正在添加业务函数，序号为：5]
+DEBUG:src/MsgRouter.cpp->submit->line:52=[正在添加业务函数，序号为：5]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+epoll_wait开始等待]
+^C
+[tony@heihei lbAgentV0.2]$ 
+
+
+lb服务器消息都回复完了，他才添加业务函数。。。。。。
+这真的是。。。
+移到前面就好了
+
+但是最后一个包的问题。。。。该咋办
+现在这个模式是针对一次wait，然后发出去的数据包可能是1-n了（n代表回复的目标客户），每个包的请求或者响应也不确定了，但是写事件的开启应该在什么时候呢，之前默认是一个请求回复的是一个客户端，那么这个在之前的udp中是没有问题的。但是现在回复的是n个目标，第二次wait需要处理第一次wait最后一个包（也就是最后一个包的时候，写事件必须打开），但是又必须保证下一次wait完成如果没有包发送需要关闭写事件。这该怎么办
+可以考虑这样的策略，每次wait之前，我先检测是否buf里有数据，如果有，我打开，如果没有，我就不打开，但是这好像要改底层代码了
+可以这样考虑，我激活写事件还是正常，中间不关闭写事件，但是如果调用了procseeWrite为空，那不好意思我直接关掉写事件，wait完成。然后处理这些事件的发送过程时，比如这次wait一共要发211311的包，刚开始时发2时会开启写事件，发1时强制发送2包，不关闭写事件，发第三个数据1时，不加入队列，直接压入数据，不关闭写事件，发3时，强制发送11包，然后不关闭写事件（注意，第一次写事件还没有被关闭），发送第5个1时，强制发送，发送第6个1时不关闭写事件，然后回到wait，这时肯定wait完成，那么如果还有其他事件（也要发送，那么由于缓冲区有数据，所以不需要开启写事件，然后如果发送地址恰好和之前的一样，那么直接压入，如果不一样也是强制发送。。。。）检测到写事件（如果前面还有其他事件），然后执行写事件，（如果这个写事件后面还有要发的包呢）（这个时候还没有关闭写事件，但是缓冲区为空了，这个时候可以判断是否已经开启写事件，然后如果已经开启，就不用开启），当执行完写事件之后，还是不关闭写事件，然后后面的如果也要发送，也是一样的逻辑，到最后又进行了一轮wait，这个时候只有写事件，然后将最后一个包写到对端，还是不关闭写事件，然后又立马wait完成，这个时候写的数据为空，也就是readsize==0，那么就直接关闭写事件，非常完美
+可以解决，但是如果通过addTask，可能会导致写事件在更改任务之前，导致多次写为0（比如下面），如果不想这样，可以直接强制写，但是我这里就不改了
+EBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:76=[正在关闭写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:85=[正在唤醒子线程]
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：0]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:85=[epoll_wait等待完成，epfd树3有2事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:76=[正在关闭写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:85=[正在唤醒子线程]
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：0]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:87=[epoll_wait正在处理第1件事情]
+DEBUG:src/EventLoop.cpp->readMyData->line:102=[已被唤醒,主线程说：该起来干活了该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:108=[正在处理任务,当前一共有2个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:6]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:6]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：4的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+^C
+[tony@heihei bin]$ 
+
+
+21、群组转发的时候出现了段错误。。。
+DEBUG:src/MsgRouter.cpp->call->line:32=[userData的地址：0]
+DEBUG:src/LbAgent.cpp->requestHandle->line:65=[requestHandle开始执行]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:403=[群聊转发正在执行]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:413=[在线群组1成员信息：]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:415=[uid：1，姓名：小李]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:415=[uid：2，姓名：Tony]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:415=[uid：3，姓名：小企鹅]
+DEBUG:./include/LbAgent.h->operator==->line:181=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:181=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:181=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:181=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:181=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:181=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:435=[2]
+DEBUG:./include/LbAgent.h->operator==->line:181=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:181=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+段错误(吐核)
+[tony@heihei bin]$ 
+
+通过日志初步判断为
+	HostInfo& server = user_ServerMap[personUid];
+		Debug("uid：%d，姓名：%s所在的主机：[%s:%d]", memberData->member(i).uid(), memberData->member(i).name().data(), server.ip, server.port);
+		//将responses对应的host种添加一个uid
+		//先判断当前RepostMsgResponseTo是否存在，如果不存在，就先初始化一个
+		if (responses.find(server) == responses.end()) {
+			Debug("2");
+中间的find出现问题了
+
+尝试bug的时候发现了一个其他的bug，这个bug可能不是每次都出现的。。。。。先不管
+（DEBUG:src/Udp.cpp->processRead->line:44=[正在解析数据]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:36]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:141=[readFromBuffer正在执行，size：4, getReadSize:32]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:1, this->m_msglen:4]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：8，读缓冲区的写指针为：36]
+DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为 ,大小为：4]
+DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：12，读缓冲区的写指针为：36]
+DEBUG:src/Message.cpp->analyze->line:49=[当前数据解析成功,msgid：1，msglen：4，m_data  ]
+DEBUG:src/Message.cpp->analyze->line:50=[Response,读缓冲区的读指针为：12，读缓冲区的写指针为：36]
+DEBUG:src/MsgRouter.cpp->call->line:61=[当前业务序号：1]
+DEBUG:src/MsgRouter.cpp->call->line:69=[userData的地址：0]
+DEBUG:src/LbAgent.cpp->requestHandle->line:65=[requestHandle开始执行]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:187=[requestType:1]
+DEBUG:src/LbAgent.cpp->returnBaseServer->line:230=[开始执行returnBaseServer]
+段错误(吐核)
+[tony@heihei bin]$ ）
+
+发现定位错了位置，是这里：
+
+	responses[server].set_fromid(memberData->uid()); //谁发的
+			responses[server].set_gid(memberData->gid()); //发给哪个组
+			//取出RepostMsgRequest的消息
+			//这个targetRequest是为了保存处理好的消息准备删除的模板
+			std::shared_ptr<lbService::RepostMsgRequest> targetRequest;
+			for (auto request : msgCatch.getMsgList(targetRequest)) {
+				Debug("3");
+那个for出现了问题
+ msgCatch.getMsgList(targetRequest);这里有问题。。。
+最终定位在
+template <class Message_T>
+	std::list<Message_T>& matchList(Message_T& message, int msgIdentifier) {//message没啥用，这个主要是为了自动推导用的
+		Debug("matchList正在匹配list");
+		if (msgIdentifier == 0) {
+			Debug("std::get<0>(m_catch)的地址：%x,当前list大小：%d", &std::get<0>(m_catch), std::get<0>(m_catch).size());
+			Debug("准备返回数据");
+			std::cout << "当前list的类型：" << typeid(std::get<0>(m_catch)).name() << "当前message的类型：" << typeid(Message_T).name() << std::endl;
+
+			return std::get<0>(m_catch);
+		}
+返回值问题上了，如果改成非引用就正确了，为什么，因为引用本质上是这样的：（参考网页https://blog.csdn.net/qq_62015542/article/details/129867042）
+nt &ra = a; 在编译器下等同于以下两句代码
+int* @sysp=&a;  //系统自定义一个临时指针变量@sysp(@表示这是系统内部定义的)
+define ra (*@sysp) //这里是一个宏定义，即ra是一个宏名，不是变量
+看不懂，这个先不管了，后面有时间在优化把
+
+但是不想复制一份怎么办
+，不能复制。。。如果不加引用，写进去的是副本，打印的时候size是0，而如果加引用是1，但是会报错。。。。
+可以取地址，对引用取地址，会得到原始变量的地址，引用本身的地址是娶不到的，然后其他函数适配一下
+
+22、3个用户在群组发消息，结果lb服务器转发之后，需要转发给8个服务器（实际上只有两个服务器呀），然后通过log打印发现：
+//先判断当前RepostMsgResponseTo是否存在，如果不存在，就先初始化一个
+		if (responses.find(server) == responses.end()) {
+			//创建对应的回复response，并通过map索引
+			lbService::RepostMsgResponseTo response;  //不能直接写道下面的=右边
+			Debug("if里面目标服务器个数：%d", responses.size());
+			responses[server] = response;
+			//初始化一下其他项
+			responses[server].set_modid(2); //代表是群聊
+			Debug("if里面目标服务器个数：%d", responses.size());
+			responses[server].set_fromid(memberData->uid()); //谁发的
+			Debug("if里面目标服务器个数：%d", responses.size());
+			responses[server].set_gid(memberData->gid()); //发给哪个组
+			Debug("if里面目标服务器个数：%d", responses.size());
+			//取出RepostMsgRequest的消息
+			auto targetMsgList = msgCatch.getMsgList(targetRequest);
+			Debug("targetMsgList的大小：", targetMsgList->size());
+			for (auto request : *msgCatch.getMsgList(targetRequest)) {
+
+
+ondition:1, obj.serviceCondition:1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:436=[if里面目标服务器个数：3]
+DEBUG:./include/LbAgent.h->operator==->line:183=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:183=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:183=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:438=[if里面目标服务器个数：4]
+DEBUG:./include/LbAgent.h->operator==->line:183=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:183=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10011 obj.port:10010; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:./include/LbAgent.h->operator==->line:183=[比较对象  ip:127.0.0.1 obj.ip:127.0.0.1 ; port:10010 obj.port:10011; serviceCondition:1, obj.serviceCondition:1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:440=[if里面目标服务器个数：5]
+
+std::map<HostInfo, lbService::RepostMsgResponseTo, HostCmp>responses;
+这里的比较函数是使用set的，
+分析之后发现不能用set的，而是要单独给Host再分配一套比较规则
+
+不对。。。。其实是上一个版本的比较规则设计的还有一点小问题，这个小问题，已经在对应位置解释出问题所在，这里摘录如下：
+if (left == right) {
+			return left.serviceCondition < right.serviceCondition;   //这里不能有等号，因为如果有等号就会导致三个相同，也认为不相同
+			//这里其实ip和端口如果相等，然后condition不同是可以插进去的
+			//也就是如果ip和端口相等，按照condition排序，不同的话按照下面的（if之外的）return进行排序
+			//其实是有一点不合理的（如果ip相同，按理来说就认为是相同的，应该插入失败），
+			//但是mysql端的主键保证了server地址的唯一性，也算是进行了间接的弥补
+			//但是将这个用到群组转发的时候，这个细节就暴露了，导致left == right的时候，如果serviceCondition不同，那么就认为不相等
+			//可以return left.serviceCondition < right.serviceCondition; ？这样就会导致判断相同就插不进去了，、
+			//所以可以不用为了群组转发定义额外的比较函数
+		}
+改成如下：
+
+	if (left == right) {
+			return left.ip < right.ip;   //这里不能有等号，因为如果有等号，就会导致认定不相同
+			//这里使用port也行，主要就是为了让!comp(a, b) && !comp(b,a)（如果为1那么两者相等），
+			//中的comp(a, b)两次都是false，但是不能直接返回false，这个具体不太清楚原因，这也是和第一个版本的本质区别
+		}
+		return left.serviceCondition <= right.serviceCondition;
+改完之后，就不能正常工作了。。。。。。。又回到了第一个版本的问题，就是会丢失一些condition
+（然后打算用gdb调试lbagent但是，却报
+DEBUG:src/NetConnection.cpp->sendMsg->line:92=[正在执行SendMsg]
+[Thread 0x7ffff2670700 (LWP 33052) exited]
+[Thread 0x7ffff2e71700 (LWP 33051) exited]
+[Thread 0x7ffff3672700 (LWP 33050) exited]
+[Inferior 1 (process 33046) exited normally]
+Missing separate debuginfos, use: debuginfo-install libgcc-4.8.5-44.el7.x86_64 libstdc++-4.8.5-44.el7.x86_64
+就是一执行gdb 就退出，然后在网上发现好像需要一个组件（https://blog.csdn.net/hope18578/article/details/122384730）
+然后修改相关文件以及下载一些文件之后，发现还是不能用，然后（https://www.codenong.com/10389988/）这里提到还需要将gpgcheck=1设置为0，而我的是1。。。 但是设置完依然不行（我看另一篇帖子https://blog.csdn.net/testcs_dn/article/details/19565411好像是因为断点才出现这个问题）
+然后按照提示使用
+Missing separate debuginfos, use: debuginfo-install libgcc-4.8.5-44.el7.x86_64 libstdc++-4.8.5-44.el7.x86_64通过后面的指令安装了相关的包（一定不要在run里安装，要不然各种命令都会报错。。。。。）这个先不管了。。。。。正在下，下的很缓慢）
+
+然后仔细思考了这个比较函数，发现第一个版本的逻辑是正确的。。。。。。。
+
+这到底是怎么回事，给我搞得很糊涂，在测试程序里，19号bug正常出现（setFind.cpp），而且所有的方案都显示找不到。。。。。。。
+而服务器程序里第一个版本能够正常执行（19号bug不会出现），但是群组转发就不行。。。。。会出现连续创建8个组的情况
+我不管了，单独给群组那里创建一个比较函数
+
+创建一个函数之后，已经解决这个bug，不会出现8个服务器的情况了，而是正常的两个。但是关于专门测试set关于find的cpp问题，还是要关注（一定要理清关于查找失败的原因，以及如何设计最终的比较函数）
+
+23、服务器返回消息之后，但是模拟的基础服务器没有收到消息
+发现
+DEBUG:src/LbAgent.cpp->DealingRequest->line:466=[目标服务器个数：2]
+DEBUG:src/LbAgent.cpp->packageMsg->line:491=[requestHandle开始回复数据]
+DEBUG:src/Udp.cpp->sendMsg->line:129=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:130=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:10010]
+DEBUG:src/Udp.cpp->sendMsg->line:189=[当前的数据为:5,21     大家好 *]
+DEBUG:src/Udp.cpp->sendMsg->line:190=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8075,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8071,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8067,需要扩容的大小：21]
+DEBUG:src/Udp.cpp->sendMsg->line:199=[当前即将写的写缓冲区的内存情况为：m_readPos：117，m_writePos：146，getReadSize()：29，getWriteSize()：8046，data：]
+DEBUG:src/Udp.cpp->sendMsg->line:205=[压入前当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:206=[当前udp地址队列大小：0]
+DEBUG:src/Udp.cpp->sendMsg->line:212=[正在压入消息地址]
+DEBUG:src/Udp.cpp->sendMsg->line:215=[当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:216=[当前udp地址队列大小：1]
+DEBUG:src/Udp.cpp->sendMsg->line:217=[队头（网络地址）：ip：16777343, port:10010]
+DEBUG:src/Udp.cpp->sendMsg->line:218=[队尾（网络地址）：ip：16777343, port:10010]
+DEBUG:src/Udp.cpp->sendMsg->line:223=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:85=[正在唤醒子线程]
+DEBUG:src/LbAgent.cpp->packageMsg->line:491=[requestHandle开始回复数据]
+DEBUG:src/Udp.cpp->sendMsg->line:129=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:130=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:10011]
+DEBUG:src/Udp.cpp->sendMsg->line:176=[正在强制发送消息]
+port不是网络字节序。。。原来是群转发逻辑那里忘记给port进行转换了
+
+然后群组转发逻辑就通了
+
+24、
+(.text+0x20)：对‘main’未定义的引用
+在写测试文件的makefile的时候，出现了这个
+g++ -g -Wall -O2 -std=c++11 -fPIC -o ./client   ../../tools/protobuf/baseService/baseService.pb.o  ../../tools/protobuf/lbService/lbService.pb.o  ../../tools/protobuf/common/user.pb.o -I../../reactor/include -I../../tools/protobuf/baseService -I../../tools/protobuf/lbService -I../../tools/protobuf/common   -L../../reactor/lib -lreactor -lpthread -lprotobuf
+发现依赖文件没有client.o，而只是一个路径。。。原来我把makefile放错了baseServerV0.1  Makefile。。。。

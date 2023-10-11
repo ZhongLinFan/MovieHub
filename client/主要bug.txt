@@ -1,0 +1,1899 @@
+1、安装Linuxqt碰到的问题：
+（安装路径是/opt）参考了很多网站（https://www.cnblogs.com/jsjrj01/p/10948305.html）（中间会有一个c++11无法支持的问题https://blog.csdn.net/baidu_41764522/article/details/123443556这里的设置可以解决），大部分都是一样的（里面的组件除了安卓的全都装了，可以看8.26的照片））（基本上是能安装成功，能正常编译（c++11不支持的问题，需要修改设置），能输入中文（小企鹅输入法，我看centos系统本身就支持中文呀），能用的舒服（配置文件，任意命令行都能启动，每次启动qt之前都要切换到8版本的））
+其中编译问题是
+/opt/Qt5.14.2/5.14.2/gcc_64/include/QtCore/qbasicatomic.h:61: error: #error "Qt requires C++11 support"
+ #  error "Qt requires C++11 support"
+    ^
+这个编译错误
+
+由于QT客户端是直接在linux上的qt上写的所以这里就不记录文件了
+https://blog.csdn.net/qq_45662588/article/details/120757251，在解决上面的问题时，发现了引入ffmpeg库时的文章，可以看下
+
+1、在添加资源文件的时候，首先增加了qrc类，然后在里面添加了一张图片，但是在ui界面中那个路径<resource root>根本不显示，下面完全是空的（之前一张图片中有中文，在linux端将中文名修改了），然后我重新删除了之前的路径/，以及在win端修改了英文名，并且添加前缀的时候使用的是/img而不是之前的/，然后就可以看到添加的文件了
+
+2、在引入protobuf文件时，遇到了问题，不知道该怎么简单的引入.o文件或者是.cc文件
+最后解决方案是在pro文件中添加了对应已存在的文件，然后使用INCLUDEPATH 引入对应的路径就可以了，但是这个生成的-o我看编译输出，会在pro项目路径下，这个可能有点不必要吧
+
+3、在引入proto文件时，然后加入了协议头文件，由于没有意识到这个头文件的添加的敏感性，直接放在最后了，然后在自己写的log日志文件那里报了8个错误把协议头文件放到上面就没有错误了
+注意需要指定头文件和对应的动态库
+
+4、出现未定义的问题：
+welcome.o: In function `Welcome::login()':
+/home/tony/myprojects/MovieHub/client/build-qtClient-Desktop_Qt_5_14_2_GCC_64bit-Debug/../qtClient/welcome.cpp:30: undefined reference to `void Client::udpSendMsg<lbService::GetServerRequest>(lbService::GetServerRequest*, sockaddr_in*, int)'
+collect2: error: ld returned 1 exit status
+make: *** [qtClient] Error 1
+这个其实是因为发送函数是函数模板，函数模板只有实现时才会生成代码，但是这个调用是在其他文件调用的，这个时候已经过了编译的阶段了，而是在链接阶段，这个时候链接器去cpp文件去找，傻眼了。根本找不到，因为原来定义的文件根本没使用，也就没定义，这个时候就会报错了，这该咋办，要么定义和声明都在h文件，然后改成hpp文件，要么包含cpp文件，我打算直接写到h文件，然后不改名字了
+
+5、客户端的udp和tcp和展示页面进程如果是3个的线程的话，会导致展示的一闪而过，使用传统的多线程的方式不行，需要借助qt自带的多线程
+这是源码
+  //在一个线程启动udp
+    std::thread baseClientRunner(&TcpClient::run, baseClient);
+    //在一个线程启动tcp
+    std::thread mediaClientRunner(&UdpClient::run, mediaClient);
+    welcome->show();
+这该怎么办，尝试性的把Client放到qt包装的线程中
+6、在将client放到qt的线程中时，遇到了问题，就是提示
+signals:
+    void login();
+    void registerUser();
+这些信号都没有定义，还有undefined reference to `vtable for Client'，然后顺着关键字找了一下https://blog.csdn.net/chenlong12580/article/details/7431104和https://blog.csdn.net/u010168781/article/details/105298677，然后先执行qmake，再构建，但是我执行qmake，提示无需做任何事，然后我选择重新构建之后，就没有任何问题了，重新构建好像要删除之前的目标文件
+rm -f qrc_res.cpp
+rm -f moc_predefs.h
+rm -f moc_client.cpp moc_mainwindow.cpp moc_welcome.cpp
+rm -f ui_mainwindow.h ui_welcome.h
+rm -f baseService.pb.o user.pb.o lbService.pb.o client.o main.o mainwindow.o welcome.o qrc_res.o moc_client.o moc_mainwindow.o moc_welcome.o
+rm -f *~ core *.core
+
+7、我尝试让创建出来的子线程clientThread执行run函数（在run函数里再创建子线程去分别执行两个run函数，但是还是不行，还是一闪而过）
+（每个程序启动后拥有的第一个线程称为主线程，即GUI线程。QT中所有的组件类和几个相关的类只能工作在GUI线程，不能工作在次线程，次线程即工作线程，主要负责处理GUI线程卸下的工作。）
+void Client::run()
+{
+    //在一个线程启动udp
+    std::thread baseClientRunner(&TcpClient::run, baseClient);
+    //在一个线程启动tcp
+    std::thread mediaClientRunner(&UdpClient::run, mediaClient);
+}
+主线程中的main
+ QApplication a(argc, argv);
+    QThread* clientThread = new QThread;
+    Client* client = new Client;
+    Welcome* welcome = new Welcome(client);
+    MainWindow* mainWindow = new MainWindow(client);
+
+    //启动子线程
+    client->moveToThread(clientThread);
+    QObject::connect(clientThread, &QThread::started, client, &Client::run, Qt::DirectConnection);
+    clientThread->start();
+如果不创建子线程就可以正常显示，所以必须要在main中启动两个子线程分别执行client中的两个run函数
+8、当收到serverip之后，当调用回调函数时，直接退出了，不支持唤醒吗，必须要使用，而且也没有唤醒，是直接调用函数，就退出了
+打印出来的日志是
+	127.0.0.113:39:37: 程序异常结束。
+13:39:37: The process was ended forcefully.
+这个就不是单纯的上面的窗口退出问题了，而是其他的问题
+然后打算调试看看，但是调试发现无法启用调试，Unable to create a debugging engine.然后在这里找到答案了，https://blog.csdn.net/GG802312/article/details/106519562，也就是需要设置一下
+调试可以是可以了，但是一调试就报段错误，就是这样的：
+The inferior stopped because it received a signal from the operating system. Signal name : SIGSEGV Signal meaning : Segmentation fault
+也不显示窗口，（正常来说登录窗口肯定能显示的），然后我把这行代码注释掉了
+#if 0
+    //启动子线程
+    client->moveToThread(clientThread);
+    QObject::connect(clientThread, &QThread::started, client, &Client::run, Qt::DirectConnection);
+    clientThread->start();
+    //显示登陆窗口
+#endif
+发现调试时能正常显示窗口了，发现只要一启动子线程就段错误这是为啥
+
+发现调试时这里进入到这个if了
+	int nums = epoll_wait(m_epfd, m_events, m_maxSize, -1);
+	if (nums == -1) {
+		perror("epoll_wait==-1");
+		exit(0);
+	}
+打印消息如下：
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+epoll_wait==-1: 被中断的系统调用
+QMutex: destroying locked mutex
+QMutex: destroying locked mutex
+（有的时候不打印下面两段话）（上面的Segmentation fault大概是因为这里QMutex: destroying locked mutex出现了问题，但是这个无所谓的，本质上还是因为收到了中断信号，但是我不想让wait收到中断信号）
+这里提到了
+https://blog.csdn.net/robert_cysy/article/details/94191635
+不要在qt应用程序中的 main函数中直接开启任何线程。应该在UI线程中开启多线程，比如在mainWindow主窗口的构造函数里面开启线程，就不会出现此报错。
+至于为啥一调试就会出现上述问题：https://blog.csdn.net/xidomlove/article/details/8274732
+这里说了
+gdb调试的时候会在断点处插入一条中断指令,当程序执行到该断点处的时候会发送一个SIGTRAP信号,程序转去执行中断相应,进而gdb让程序停下来进行调试. 对于sem_wait\wait\read等会阻塞的函数在调试时,如果阻塞,都可能会收到调试器发送的信号,而返回非0值.
+为了解决这个意外的中断问题（不加断点尝试了一下还是会出现这个中断），可以在底层忽略这些信号（段错误不用管）（这个是程序结束时才会出现）（这里也给出了一些常用方法https://bbs.csdn.net/topics/310138907，这个是一些标准库的做法https://blog.csdn.net/qingzhuyuxian/article/details/112608819）（我参考的是这个https://blog.csdn.net/xidomlove/article/details/8274732）：
+if (nums == -1) {
+		//在调试qt程序时会出现中断错误，进入到这里，导致无法正常进行，这里就屏蔽掉entir信号
+		if (errno != EINTR)
+		{
+			perror("epoll_wait==-1");
+			exit(0);
+		}
+		perror("epoll_wait==-1");
+	}
+上面是改正过的，完美解决，那就接着调试一开始的那个问题把，果然发现了问题
+1   std::__invoke_impl<void, void (Client:: *&)(Udp *, void *), Client *&, Udp *, void *>(std::__invoke_memfun_deref, void (Client:: *&)(Udp *, void *), Client *&, Udp *&&, void *&&)                                    invoke.h           73   0x42cd06       
+2   std::__invoke<void (Client:: *&)(Udp *, void *), Client *&, Udp *, void *>(void (Client:: *&)(Udp *, void *), Client *&, Udp *&&, void *&&)                                                                           invoke.h           95   0x42c8d5       
+3   std::_Bind<void (Client:: *(Client *, std::_Placeholder<1>, std::_Placeholder<2>))(Udp *, void *)>::__call<void, Udp *&&, void *&&, 0ul, 1ul, 2ul>(std::tuple<Udp *&&, void *&&>&&, std::_Index_tuple<0ul, 1ul, 2ul>) functional         400  0x42c594       
+4   std::_Bind<void (Client:: *(Client *, std::_Placeholder<1>, std::_Placeholder<2>))(Udp *, void *)>::operator()<Udp *, void *, void>(Udp *&&, void *&&)                                                                functional         484  0x42bf9a       
+5   std::_Function_handler<void (Udp *, void *), std::_Bind<void (Client:: *(Client *, std::_Placeholder<1>, std::_Placeholder<2>))(Udp *, void *)>>::_M_invoke(std::_Any_data const&, Udp *&&, void *&&)                 std_function.h     297  0x42b7b5       
+6   operator()                                                                                                                                                                                                            functional         2471 0x43c423       
+7   UdpMsgRouter::call                                                                                                                                                                                                    MsgRouter.cpp      70   0x43c423       
+8   Message::analyze                                                                                                                                                                                                      Message.cpp        52   0x436178       
+9   Udp::processRead                                                                                                                                                                                                      Udp.cpp            48   0x431814       
+10  EventLoop::activeEventProcess                                                                                                                                                                                         EventLoop.cpp      62   0x439a57       
+11  Epoll::wait                                                                                                                                                                                                           Dispatcher.cpp     107  0x441265       
+12  EventLoop::run                                                                                                                                                                                                        EventLoop.cpp      45   0x4395ea       
+13  Client::run                                                                                                                                                                                                           client.cpp         32   0x429acc       
+14  QtPrivate::FunctorCall<QtPrivate::IndexesList<>, QtPrivate::List<>, void, void (Client:: *)()>::call(void (Client:: *)(), Client *, void * *)                                                                         qobjectdefs_impl.h 152  0x42d6cb       
+15  QtPrivate::FunctionPointer<void (Client:: *)()>::call<QtPrivate::List<>, void>(void (Client:: *)(), Client *, void * *)                                                                                               qobjectdefs_impl.h 185  0x42d65d       
+16  QtPrivate::QSlotObject<void (Client:: *)(), QtPrivate::List<>, void>::impl(int, QtPrivate::QSlotObjectBase *, QObject *, void * *, bool *)                                                                            qobjectdefs_impl.h 418  0x42d5c7       
+17  void doActivate<false>(QObject *, int, void * *)                                                                                                                                                                                              0x7f8cd5cbc5f0 
+18  QThread::started(QThread::QPrivateSignal)                                                                                                                                                                                                     0x7f8cd5aa10e7 
+19  QThreadPrivate::start(void *)                                                                                                                                                                                                                 0x7f8cd5aa335c 
+20  start_thread                                                                                                                                                                                                          pthread_create.c   307  0x7f8cd5551ea5 
+... <更多>                                                                                                                                                                                                                                                         
+然后我在cpp文件调用就可以正常调用
+ //注册收到lb服务器返回的基础服务器ip之后的操作
+ //注册收到lb服务器返回的基础服务器ip之后的操作
+    auto obtainedBaseIpFunc = std::bind(&Client::handleObtainedBaseIp, this,
+        std::placeholders::_1, std::placeholders::_2);
+    obtainedBaseIpFunc(mediaClient, nullptr);
+    mediaClient->addMsgRouter((int)lbService::ID_GetServerResponse, obtainedBaseIpFunc);
+中间那句正常调用，这说明是注册完之后，调用出问题了，然后我想模拟手动调用看看是否正常，手动调用是正常的，（不管有没有继承QOBJECT类）
+这是当Client继承QOBJECT时（并将run函数放到qThread里，但是构造函数还是在主线程里进行的）在构造函数里调用的（此时是主线程）  
+auto obtainedBaseIpFunc = std::bind(&Client::handleObtainedBaseIp, this,
+        std::placeholders::_1, std::placeholders::_2);
+    testFunc(obtainedBaseIpFunc);
+然后tesFunc调用
+void Client::testFunc(std::function<void(Udp* host, void* userData)> test){
+
+     test(mediaClient, nullptr);
+}
+发现可以正常运行，也就是继承于QOBJECT类的类对象可以正常调用绑定器绑定的函数
+，那如果把这个测试放到子线程呢（之前是int main(int argc, char *argv[])
+{
+    QApplication a(argc, argv);
+    QThread* clientThread = new QThread;
+    Client* client = new Client;
+main中执行Client;时调用的  testFunc(obtainedBaseIpFunc);）
+所以这里测试一下在子线程是否也能正常调用，竟然也可以，那到底是为啥（下面是源码：
+void Client::run()
+{
+    auto obtainedBaseIpFunc = std::bind(&Client::handleObtainedBaseIp, this,
+        std::placeholders::_1, std::placeholders::_2);
+    testFunc(obtainedBaseIpFunc);
+    mediaClient->run();
+}
+main.cpp
+  //std::thread clientThread(&Client::run, client);
+    client->moveToThread(clientThread);
+    QObject::connect(clientThread, &QThread::started, client, &Client::run, Qt::DirectConnection);
+    clientThread->start();
+）
+这就奇怪了，qt说明是支持的，但是为啥一调用就失败呢，tnnd，我改成这样就可以正常调用了，虽然后面还有错误
+int i = 0;
+   mediaClient->addMsgRouter((int)lbService::ID_GetServerResponse, obtainedBaseIpFunc, &i);
+错误是，解析的时候出现问题，
+      Debug("开始解析数据");
+        Udp client = *conn;
+        qDebug() << "conn" << conn << client.m_rbuffer->m_capacity;
+        std::shared_ptr<lbService::GetServerResponse> requestData (new lbService::GetServerResponse);
+        requestData->ParseFromArray(conn->m_request->m_data, conn->m_request->m_msglen);
+>ParseFromArray这一句会报错，段错误，如果是       Udp client = *conn;这里，也会报错。不过好像是因为我声明的时候加了explicit，所以才会报错，这个可以忽略
+而且发现如果改成这样
+  auto obtainedBaseIpFunc = std::bind(&Client::handleObtainedBaseIp, this,
+        mediaClient, nullptr);
+就全部正常，真的很邪门，传递一下参数就不可以，但是直接赋值就可以全部通过
+最终的问题就是在这两个参数传递上，如果采取其他reactor调用的方式，我在client.cpp文件上正如上面测试的那样，怎么调用都正常，注册方式完全不改的情况下
+而且出现错误的时候最终两个值的传递，到这handleFunc(host, userData)（reactor中的call那里）;这个地方之前，发现地址都是正确的，但是一调用就出错，通过调试时堆栈发现是args0和args1无法访问，这就很奇怪了，如果使用
+ auto obtainedBaseIpFunc = std::bind(&Client::handleObtainedBaseIp, this,
+        mediaClient, nullptr);
+这种方式查看堆栈可以发现args0和args1可以有正确的值，这也解释了为啥   mediaClient->addMsgRouter((int)lbService::ID_GetServerResponse, obtainedBaseIpFunc, &i);执行这个的时候解析失败，因为如果只传递一个的话，只传递了一个&i，conn获取不到，无法访问，真的很奇怪，同样的绑定注册方法，按照上面完全可以正常执行（但是这个调用是直接传递的，没有走reactor模块的call那一套，直接调用完全正常，所以就是reactor传参的过程中出现问题，但是奇怪的是reactor那里到call之前地址都是可以看见，但是一往底层调用就不可见）
+先不管了解决了问题就行。。。。。这个能过就行
+不过在不断测试的时候发现负载均衡算法有点问题，如果都满负载了，那么最后都会分到一个server中，导致出现21个2个这种分布存在
+
+9、登录用户时发现密码正确时，登录失败，并且导致baseServer吐核，客户端第一次发送的uid正确，第二次再发送，发现lb服务器接受的uid为0，导致吐核，但是客户端打印确实uid发送的正确，这是乍回事
+发现有一个小小的问题是还没连接成功，就已经发送数据了，和这个有关系吗，但是我之前不是判断了吗
+ if(baseClient->connectServer()){
+        connected = true;
+这里，看了之前的代码发现是异步响应的
+bool TcpClient::connected()
+{
+	//说明建立连接成功，关闭写事件，添加读事件检测吗，更改写回调
+	m_channel->writeEnable(false);
+	m_channel->readEnable(true);
+	m_evloop->addTask(m_evloop, m_evloop->packageTask(m_channel, TaskType::MODI));
+	//更改写回调函数
+	auto writeFunc = std::bind(&TcpClient::processWrite, this);  //建立连接的写回调，建立完之后，需要更改
+	m_channel->changeWriteCallBack(writeFunc, nullptr);
+	//再次验证是否真正建立（保底）
+	Debug("已连接到%s:%d", inet_ntoa(m_sOrcAddr->sin_addr), ntohs(m_sOrcAddr->sin_port));
+
+	//hook函数执行
+	if (connOnStart != nullptr) {
+		connOnStart(this, connOnStartArgs);
+	}
+
+	return true;
+}
+这里才会return true，>connectServer没用，所以我打算修改源码增加一个属性，然后客户端判断属性是否连接即可
+DEBUG:src/TcpClient.cpp->connectServer->line:57=[正在连接。。。EINPROGRESS]
+DEBUG:src/TcpClient.cpp->connectServer->line:59=[添加写事件任务]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+发送登陆用户
+DEBUG:src/MsgRouter.cpp->call->line:72=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:55=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/Udp.cpp->processRead->line:58=[读事件是否开启；1]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:311=[当前Buf的情况为：，当前读指针：28，当前写指针：28]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[扩充Buf大小，将未读区域移动到开头的位置]
+当前不可读
+read: 资源暂时不可用
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：20的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树21有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+登陆操作
+DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有1个任务]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:118=[正在添加fd：29到反应堆：-1]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:46=[epoll成功添加读事件fd:29]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：22的读事件响应完成]
+uid: 1 密码: "1234"
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树21有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+DEBUG:../qtClient/client.h->packageMsg->line:48=[requestHandle开始回复数据]
+DEBUG:src/TcpClient.cpp->connected->line:90=[已连接到127.0.0.1:10011]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：29的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树21有2事件触发DEBUG:src/NetConnection.cpp->sendMsg->line:92=[正在执行SendMsg]
+DEBUG:src/NetConnection.cpp->sendMsg->line:101=[本次发送数据，是否激活写事件：1]
+DEBUG:src/NetConnection.cpp->sendMsg->line:120=[]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/NetConnection.cpp->processWrite->line:57=[开始组织数据并响应，预响应的消息为：���i�]
+DEBUG:src/NetConnection.cpp->processWrite->line:79=[本次发送的字节大小为：0]
+DEBUG:src/NetConnection.cpp->processWrite->line:83=[正在关闭写事件]
+当前的数据为:1,8DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+]
+DEBUG:src/NetConnection.cpp->sendMsg->line:121=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:66=[扩充Buf大小为两倍]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:72=[Buf的大小为：10]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：6,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:66=[扩充Buf大小为两倍]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:72=[Buf的大小为：26]
+DEBUG:src/NetConnection.cpp->sendMsg->line:135=[当前即将写的写缓冲区的内存情况为：m_readPos：0，m_writePos：16，getReadSize()：16，getWriteSize()：10，data：]
+DEBUG:src/NetConnection.cpp->sendMsg->line:141=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有3个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:29]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:29]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:29]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：29的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第1件事情]
+DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有0个任务]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：22的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树21有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/NetConnection.cpp->processWrite->line:57=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:380=[本次写到socket的字节数为：16]
+DEBUG:src/NetConnection.cpp->processWrite->line:79=[本次发送的字节大小为：16]
+打印日志发现，是连接之后发送的，这就有点意思了
+然后打印日志看看到底那个环节变为0了，在tcpSendMsg这个函数里发现还没有变为0，这个时候突然意识到package打包作用域失效的问题
+ bool packageMsg(int responseID, std::string& responseSerial, Conn_T* conn, Response_T* responseData){
+        Debug("requestHandle开始回复数据");
+        //responseData的结果序列化
+        std::string responseSerial;
+        responseData->SerializeToString(&responseSerial);
+        //封装response
+        auto response = conn->m_response;
+        response->m_msgid = responseID;
+        response->m_data = &responseSerial[0];
+        response->m_msglen = responseSerial.size();
+        response->m_state = HandleState::Done;
+        return true;
+    }
+可以看到  std::string responseSerial;这个作用域在调用之后就失效了，而
+ if (packageMsg<NetConnection, Response_T>(responseID, responseSerial, conn, responseData)) {
+            //Debug("tcpSendMsg已经打包数据完成，准备执行发送函数");
+            conn->sendMsg();
+        }
+conn发送的地址已经不可以用了，栈已经退出了，所以导致发送的数据都为0了，为啥之前测试的时候没有出现问题呢，大概是因为qt编译的更加严格一些，所以才没有这些问题
+
+
+10、好像不能将一个对象的两个方法移动到两个qthread里面
+EBUG:src/MsgRouter.cpp->submit->line:15=[正在添加业务函数，序号为：2]
+开始移动startBaseClient
+QObject::moveToThread: Current thread (0xea81e0) is not the object's thread (0x1074d80).
+Cannot move to target thread (0x105d7c0)
+，那应该这个run还在子线程里面把，但是发现没有出现异常，就很奇怪，没有出现异常就先这样吧
+
+11、在客户端client类增加一个属性后，突然点击登录按钮突然变为注册操作了，也就是isNewUser变为了true，导致发射注册信号，排查发现构造函数没有初始化true，但是之前登录一直正常，可能和类的结构有关，但是肯定是要初始化的，所以这个bug不用纠结
+
+12、编译时碰到一个bug：non-const lvalue reference cannot bind to a temporary
+ //发送群消息
+    void sendMsg(int modid, int toId, QString& msg);
+
+
+connect(ui->sendBtn, &QPushButton::clicked, this, [&](){
+        emit sendMsg(1,2, ui->sendBuf->toPlainText());
+        //清除调缓冲
+        ui->sendBuf->clear();
+    });
+这是问题代码，然后找到这篇帖子https://www.shuzhiduo.com/A/gGdXkY4754/
+ ui->sendBuf->toPlainText()这个是个临时值是个右值，常量引用可以绑定右值，非常量引用不可以
+13、碰到了一个很奇怪的现象，就是点击一个按钮预期会产生一个窗口，但是这个窗口关不掉，关两次才能关掉，然后想到可能是生成了两个窗口，一查发现注册了两次。。。。。
+14、在注册群组时，点击确认按钮，发射了信号，但是不执行槽函数，然后找到了一个很精辟的答案，https://blog.csdn.net/u011388696/article/details/107854759/
+而我的日志确实打印出了这句话：
+开始移动startBaseClient
+QObject::moveToThread: Current thread (0x12a21e0) is not the object's thread (0x1443800).
+Cannot move to target thread (0x14442c0)（为什么会移动失败呢，我猜测是因为第一个线程已经占用了这个Qobject，第二个再传递，就传递不进来了）（之前是一个client（QOBject里）里面有两个run）
+可以看到基础服务器确实移动不到这个线程里面，那他是怎么工作的呢，很奇怪，之前为啥没有这种问题呢，因为之前都是这个baseCLient发信号告诉其他线程？怎么解决？把udp和tcp客户端包装成两个Qobject类，里面有段话，由此也可以推断，标准线程std::thread如果结合QObject使用信号槽，槽函数也是不能执行的。
+但是老子费了一晚上时间把上面两个都变成了Qobject，而且也没有不能移动的问题，但是还是没有任何变化，也就是发射了信号没有执行
+然后感觉需要研究一下底层的一些机制，有两篇文章帮助很大（https://blog.csdn.net/thequitesunshine007/article/details/105493888和https://blog.csdn.net/HiWangWenBing/article/details/131794750还有这一篇https://blog.csdn.net/u011388696/article/details/107854759/其他差的结果也可以在ipad上看看），我这个具体原因是什么呢，就是
+//启动子线程执行mediaClient的run
+    client->qMediaClient->moveToThread(mediaThread);
+    QObject::connect(mediaThread, &QThread::started, client->qMediaClient, &MediaClient::startMediaClient);
+    mediaThread->start();
+    qDebug() << "开始移动startBaseClient";
+    //启动子线程执行baseerver的run
+    client->qBaseClient->moveToThread(baseThread);
+    QObject::connect(baseThread, &QThread::started, client->qBaseClient, &BaseClient::startBaseClient);
+    baseThread->start();
+这两个线程一直忙于自己的事件循环run，根本没空处理信号队列上的任务，也就是QObject上自己的事件循环插不上时间片去处理信号队列的任务，两个解决方案第一个是udp和tcp给run提供成虚函数，然后在这里将QCoreApplication::processEvents()，执行一下，然后在执行run，但是如果自己的run不来事件是不是就回不到QCoreApplication::processEvents()这里了，那就epoll_wait只能采用非阻塞形式了，或者发射信号的时候唤醒一下底层，这个方法的好处是实现了真正的多线程，哪个线程的函数交给哪个线程。第二个方法是连接信号与槽的时候加上Qt::DirectConnection，加上这个之后，发出信号的线程会直接调用对应的函数，而不是说要把信号放到对应的线程的信号队列上，这里有一个不好的是加上这个之后，主线程或者ui线程会处理逻辑上的一些业务，从而可能影响界面上的性能
+，至于上面要不要大费周章的解决移动线程失败的问题，感觉是不太需要的，如果采取第二种方法，但是如果想改成第一种方法，则必须要改进，总之已经解决了这个bug
+这是下面的测试代码：
+  bool isConnected = connect(this, &RegisterDialog::registerGroup, client->qBaseClient, &BaseClient::registerGroup);
+    connect(this, &RegisterDialog::registerGroup, this, [&](){
+        qDebug() << "你好" ;
+    });
+    connect(this, &RegisterDialog::registerGroup, client, &Client::test);
+    connect(this, &RegisterDialog::registerGroup, client->qMediaClient, &MediaClient::test, Qt::DirectConnection);
+你好
+你不好
+MediaClient你好
+最后三条信号都会执行，但是第一个不执行（中间两个信号发出和接收是在同一个线程，最后一个在子线程第一个也是子线程）
+
+15、消息列表等实现很顺利，但是实现客户端消息发送展示的时候，修改了一下协议等，（lb和base，因为有的条件必须知道）
+16、还出现了客户端中群聊号和私聊号相同的情况下，展示混乱的现象
+，而且在复现上述bug的时候想重新登录（中间没有关闭lb服务器），lb服务器出现下面的现象
+endto: Invalid argument
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：0]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:87=[processWrite：当前要发送的地址信息：ip：0.0.0.0, port:0]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:402=[正在发消息给：0.0.0.0:0]
+sendto: Invalid argument
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：0]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:87=[processWrite：当前要发送的地址信息：ip：0.0.0.0, port:0]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:402=[正在发消息给：0.0.0.0:0]
+sendto: Invalid argument
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：0]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:87=[processWrite：当前要发送的地址信息：ip：0.0.0.0, port:0]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:402=[正在发消息给：0.0.0.0:0]
+^Csendto: Invalid argument
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：0]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+这个先不管了，后期出现再调整吧
+先解决群聊消息收到不同步，点击返回也没用，不对，发送群消息，退出在登录，就会出现lb崩溃（上面）的局面，应该是客户端的问题
+发现只有一个台机子登录，在群里发消息一发消息就是上面，打印日志发现
+DEBUG:src/LbAgent.cpp->DealingRequest->line:382=[群聊转发正在执行]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:391=[在线群组1成员信息：]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:393=[uid：1，姓名：小李]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:393=[uid：3，姓名：小企鹅]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:398=[i目标服务器个数：0]
+正在执行ServerAddr拷贝构造函数
+DEBUG:src/LbAgent.cpp->DealingRequest->line:405=[uid：1，姓名：小李所在的主机：[127.0.0.1:10011]]
+DEBUG:./include/LbAgent.h->matchList->line:486=[std::get<0>(m_catch)的地址：511288a0,当前list大小：1]
+当前list的类型：St4listISt10shared_ptrIN9lbService16RepostMsgRequestEESaIS3_EE当前message的类型：St10shared_ptrIN9lbService16RepostMsgRequestEE
+DEBUG:src/LbAgent.cpp->DealingRequest->line:418=[targetMsgList的大小：]
+DEBUG:./include/LbAgent.h->matchList->line:486=[std::get<0>(m_catch)的地址：511288a0,当前list大小：1]
+当前list的类型：St4listISt10shared_ptrIN9lbService16RepostMsgRequestEESaIS3_EE当前message的类型：St10shared_ptrIN9lbService16RepostMsgRequestEE
+DEBUG:src/LbAgent.cpp->DealingRequest->line:433=[if结尾目标服务器个数：1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:398=[i目标服务器个数：1]
+无参构造ServerAddr
+正在执行ServerAddr拷贝构造函数
+DEBUG:src/LbAgent.cpp->DealingRequest->line:405=[uid：3，姓名：小企鹅所在的主机：[:2]]
+DEBUG:./include/LbAgent.h->matchList->line:486=[std::get<0>(m_catch)的地址：511288a0,当前list大小：1]
+当前list的类型：St4listISt10shared_ptrIN9lbService16RepostMsgRequestEESaIS3_EE当前message的类型：St10shared_ptrIN9lbService16RepostMsgRequestEE
+DEBUG:src/LbAgent.cpp->DealingRequest->line:418=[targetMsgList的大小：]
+DEBUG:./include/LbAgent.h->matchList->line:486=[std::get<0>(m_catch)的地址：511288a0,当前list大小：1]
+当前list的类型：St4listISt10shared_ptrIN9lbService16RepostMsgRequestEESaIS3_EE当前message的类型：St10shared_ptrIN9lbService16RepostMsgRequestEE
+DEBUG:src/LbAgent.cpp->DealingRequest->line:433=[if结尾目标服务器个数：2]
+DEBUG:./include/LbAgent.h->matchList->line:486=[std::get<0>(m_catch)的地址：511288a0,当前list大小：1]
+当前list的类型：St4listISt10shared_ptrIN9lbService16RepostMsgRequestEESaIS3_EE当前message的类型：St10shared_ptrIN9lbService16RepostMsgRequestEE
+DEBUG:src/LbAgent.cpp->DealingRequest->line:442=[目标服务器个数：2]
+DEBUG:src/LbAgent.cpp->packageMsg->line:487=[requestHandle开始回复数据]
+DEBUG:src/Udp.cpp->sendMsg->line:129=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:130=[sendMsg：当前要发送的地址信息（网络地址）：ip：0, port:0]
+DEBUG:src/Udp.cpp->sendMsg->line:189=[当前的数据为:5,1312 *]
+DEBUG:src/Udp.cpp->sendMsg->line:190=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8164,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8160,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8156,需要扩容的大小：13]
+DEBUG:src/Udp.cpp->sendMsg->line:199=[当前即将写的写缓冲区的内存情况为：m_readPos：28，m_writePos：49，getReadSize()：21，getWriteSize()：8143，data：]
+DEBUG:src/Udp.cpp->sendMsg->line:205=[压入前当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:206=[当前udp地址队列大小：0]
+小企鹅根本没登陆，是之前的登录没有正常下线，导致发送给他消息时发送大量的0地址，可以设置如果是0地址就异常吧，当然要同步正确的登录状态
+然后看了下群发的逻辑，发现自己的也发过去，正好群聊没有确认机制，完全可以利用这个当作确认机制，就是如果我自己收到了消息，那么其他人肯定也收到了，
+所以这上面的bug，只需要修改成员状态即可，不过为了保证强壮，也可以增加一些判断条件
+，正常了，之前群聊不显示是因为，一直没有进入wait，一直发不过去，但是发送端会多一条消息，这时候可以使用这个作为确认是否发送成功
+而且中间发现就是当前聊天界面切换到其他用户，再切换回来，聊天消失，然后发现lastTargetRecords.curDisplay == 0;这里使用==，导致是个判断。。。。。改过来之后就正常了，不知道其他bug是不是这个引起的
+然后又发现了一个问题，私聊之后，然后群聊，但是接收端不显示
+	当前消息模块： 1
+		当前消息来源： 1
+第 0 条消息： "你和iao"
+	当前消息模块： 2
+		当前消息来源： 1
+第 0 条消息： "大家好"
+第 1 条消息： ""
+		当前消息来源： 2
+第 0 条消息： "大家好"
+		当前消息来源： 3
+	当前消息模块： 12372256
+		当前消息来源： 0
+
+
+这是其中的一个客户端（uid为2）
+	当前消息模块： 1
+		当前消息来源： 2
+第 0 条消息： "你和iao"
+		当前消息来源： 3
+	当前消息模块： 2
+		当前消息来源： 1
+		当前消息来源： 2
+第 0 条消息： "大家好"
+	当前消息模块： 892811061
+		当前消息来源： 943076407
+这是另一个客户端（uid为1）
+发现是有问题的，然后私聊发现
+当前消息模块： 1
+	当前消息来源： 1
+		第 0 条消息： "你好"
+当前消息模块： 208
+	当前消息来源： 0
+接收端有问题，这个不可能有208，发送端正常
+，发现是接收端如果当前在当前聊天界面，就会
+出现奇怪的消息模块
+当前消息模块： 1
+	当前消息来源： 1
+		第 0 条消息： "1234"
+		第 1 条消息： "2156"
+当前消息模块： 892810805
+	当前消息来源： 926299703
+打印了发送消息的那一端，发现发送端也会出现这种情况
+然后在各个位置打印日志发现：
+userInfo itemClicked的模块个数 2
+sendBtn clicked的模块个数 3
+当点击itemClicked之后到点击sendBtn 之间，出现了问题，也就是itemClicked里面出现了问题，然后再打印日志
+userInfo itemClicked的模块个数 2
+lastChatObj 32672 lastChatModid -279671104 curChatObj 2 curChatModid 1
+sendBtn clicked的模块个数 3
+正在发送消息到对端，发送模式： 1 发送目的地址 2
+发现问题了，tmd如果是第一次的话，
+  int lastChatObj = m_client->m_user.state.chatObj;
+  int lastChatModid = m_client->m_user.state.chatModid;
+m_user.state.chatObj;这些根本没有状态。。。。。
+然后修改后变成初始状态不删除就行了
+
+17、修改之后发现1号用户在3号群里发的消息，对端显示在了1号群里，并且也记录在了1号群里
+这是发送端的记录状态
+当前消息模块： 1
+	当前消息来源： 2
+		第 0 条消息： "你好"
+	当前消息来源： 4
+当前消息模块： 2
+	当前消息来源： 1
+		第 0 条消息： "211231"
+		第 1 条消息： ""
+		第 2 条消息： "你在干啥"
+		第 3 条消息： ""
+	当前消息来源： 2
+		第 0 条消息： "你好"
+		第 1 条消息： ""
+	当前消息来源： 3
+		第 0 条消息： "今天看到了一个奇怪的东西"
+		第 1 条消息： ""
+		第 2 条消息： "你在干什么"
+
+基本正确，但是对端的就不行了
+
+，然后尝试私聊的时候，发现
+当前消息模块： 1
+	当前消息来源： 2
+		第 0 条消息： "你在干什么"
+		第 1 条消息： "我在吃饭"
+		第 2 条消息： "我也在吃饭"
+	当前消息来源： 3
+	当前消息来源： 9
+当前消息模块： 2
+
+私聊的存储逻辑是对的（3和9是点击clicked创建的，这个无关紧要），但是点击clicked发现，9号还有消息残余。。也就是9号还能看到你在干什么，发现下面代码有问题
+ for(int i = 0; i < ui->rightWidget->count(); i++){
+                        qDebug() << "i=" << i;
+                        delete ui->chatHistory->item(i);
+                    }
+是不能直接删除的，需要先移除，再删除，如果不移除，那么count属性永远不变，移除的时候有两种方式  QListWidgetItem* item = ui->listWidget->takeItem(2);//指定删除
+    ui->listWidget->removeItemWidget(item);，选其一即可，但是移动的时候需要注意一下下标，在代码里已经标明了
+改完之后，发现还是在私聊的时候出现切换联系人残留信息的现象，发现是删除不完全
+当前消息模块： 1
+	当前消息来源： 2
+		第 0 条消息： "你在干什么"
+		第 1 条消息： "我在吃饭"
+		第 2 条消息： "我也在吃饭"
+		第 3 条消息： "你吃的什么饭"
+	当前消息来源： 4
+当前消息模块： 2
+DEBUG:src/MsgRouter.cpp->call->line:34=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：31的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+userInfo itemClicked的模块个数 2
+lastChatObj 2 lastChatModid 1 	 false
+当前widget的item: 2
+i= 0
+i= 1
+删除完之后widget的item: 2
+userInfo itemClicked的模块个数 2
+
+可以发现本来只有4条消息，删除之后还是两条消息，tmd，发现 for(int i = 0; i < ui->rightWidget->count(); i++)不是>rightWidget-呀，是chatHistory窗口。。。。。
+发现还是删除不干净
+当前消息模块： 1
+	当前消息来源： 2
+		第 0 条消息： "你在干什么"
+		第 1 条消息： "我在吃饭饭"
+		第 2 条消息： "吃的什么饭"
+		第 3 条消息： "吃的炒肉版饭"
+当前消息模块： 2
+DEBUG:src/MsgRouter.cpp->call->line:34=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：31的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+userInfo itemClicked的模块个数 2
+lastChatObj 2 lastChatModid 1 	 false
+当前widget的item: 4
+i= 0
+i= 1
+删除完之后widget的item: 2
+发现需要for(int i = 0; i < ui->chatHistory->count(); i++){先取出来，要不然>count是实时变化的
+改完之后就逻辑正常了，然后再分析群聊不正常的存储结构吧
+	当前消息来源： 1
+		第 0 条消息： "大家好"
+		第 1 条消息： ""
+
+首先是这个，每条消息会多个换行，而私聊就不会，而且只是发送端有，接收端是没有的
+当前消息模块： 2
+	当前消息来源： 1
+		第 0 条消息： "大家好"
+		第 1 条消息： ""
+		第 2 条消息： "我叫饭冢林"
+		第 3 条消息： ""
+		第 4 条消息： "大家都在干什么"
+		第 5 条消息： ""
+大概率是sendBtn的信号中
+//由于群聊没有消息发送成功确认机制，而是直接默认发送成功，所以这里直接加上
+        if(m_client->m_user.state.chatModid == 2){
+            updateWidgetAfterSend();  //不管之前的统统需要清空
+        }
+这段代码引起的
+updateWidgetAfterSend当前要记录的消息 "大家好"
+。。。。。
+发现问题了updateWidgetAfterSend当前要记录的消息 ""，发现这段代码执行了两边，
+发现发送消息之后会有一个handleSendMsgResult。。。原来是我的base服务器直接把消息发给lb服务器之后直接发送了一个转发成功的结果给客户端，然后客户端执行sendMsgResultNotify这个之后
+最终又会执行一遍updateWidgetAfterSend。。。。。，当时写
+  if(m_client->m_user.state.chatModid == 2){
+            updateWidgetAfterSend();  //不管之前的统统需要清空
+        }
+这个的时候忘记了，直接删除，存储结构就可以了，但是不显示了。。。。然后点击几次之后又出现了
+发现大概率是
+处理发送结果的时候
+ if(fromId == -1 || (m_client->m_user.state.chatObj == fromId &&
+            m_client->m_user.state.chatModid == 1)){
+        //如果是在当前窗口直接显示所有的消息
+        updateChatWidegt(modid, toId);
+    }
+这个地方出问题了，这个fromId其实是为了上面的
+if(m_client->m_user.state.chatModid == 2){
+            updateWidgetAfterSend();  //不管之前的统统需要清空
+        }
+设计的，所以可以直接删除
+改成如下
+if(m_client->m_user.state.chatObj == fromId){
+        //如果是在当前窗口直接显示所有的消息
+        updateChatWidegt(modid, toId);
+    }
+即可
+这时候可以是可以了但是，发送端发完一条消息两端均正常，但是接收端回复一条消息，一开始的发送端，记录到其他群里了。。。。。
+当前消息模块： 1
+当前消息模块： 2
+	当前消息来源： 1
+		第 0 条消息： "大家好"
+	当前消息来源： 2
+		第 0 条消息： "你这么牛"
+
+这是1号用户
+当前消息模块： 1
+当前消息模块： 2
+	当前消息来源： 1
+		第 0 条消息： "大家好"
+		第 1 条消息： "你这么牛"
+这是2号用户，然后又来一个回合
+当前消息模块： 1
+当前消息模块： 2
+	当前消息来源： 1
+		第 0 条消息： "大家好"
+		第 1 条消息： "为啥我没收到你的消息"
+	当前消息来源： 2
+		第 0 条消息： "你这么牛"
+		第 1 条消息： "真的马"
+
+1号用户
+handleReceivedMsg当前要记录的消息 "真的马"
+当前消息模块： 1
+当前消息模块： 2
+	当前消息来源： 1
+		第 0 条消息： "大家好"
+		第 1 条消息： "为啥我没收到你的消息"
+	当前消息来源： 2
+		第 0 条消息： "你这么牛"
+		第 1 条消息： "真的马"
+
+2号用户，这真的很神奇
+发现是handleReceivedMsg这个函数出的问题
+，发现是client->m_user.chatHistory[modid][fromId].records.append(record);  //注意这里可是fromId这里出问题了
+这里不能是fromId，这个应该是gid，fromid是对端id，所以需要改成 int fromId = receivedData->toid();  //来自哪个群
+最终改成
+ int modid = receivedData->modid();
+    int toId = receivedData->toid();  //目的gid或者是这个消息的目的uid
+    int fromId = receivedData->fromid();  //来自谁发的（哪个uid）
+    //先将消息压入缓存中
+    chatRecords record;
+    record.data = QString::fromStdString(receivedData->msg());
+    record.fromId = fromId;
+    if(modid == 1 || (modid == 2 && fromId != client->m_user.uid)){  //如果群组是自己发的消息，不处理
+        qDebug() << "handleReceivedMsg当前要记录的消息" <<  record.data;
+        client->m_user.chatHistory[modid][toId].records.append(record);  //注意这里是toid
+
+发现不行。。。。。
+私聊存储结构又会出现问题：
+handleReceivedMsg当前要记录的消息 "你还在吗"
+当前消息模块： 1
+	当前消息来源： 1
+		第 0 条消息： "你还在吗"
+当前消息模块： 2
+	当前消息来源： 1
+		第 0 条消息： "大家好"
+		第 1 条消息： "你在干什么"
+DEBUG:src/MsgRouter.cpp->call->line:34=[调用业务回调函数成功]
+私聊时，接收端收到uid为2的消息后，会存储在uid为1的地方所以，需要分情况讨论，私聊和群聊的不能通过  client->m_user.chatHistory[modid][toId].records.append(record);  //注意这里是toid这一条语句表达
+改成如下：存储结构完全正常了
+ //取出数据
+    int modid = receivedData->modid();
+    int toId = receivedData->toid();  //目的gid或者是这个消息的目的uid
+    int fromId = receivedData->fromid();  //来自谁发的（哪个uid）
+    //先将消息压入缓存中
+    chatRecords record;
+    record.data = QString::fromStdString(receivedData->msg());
+    record.fromId = fromId;
+    qDebug() << "handleReceivedMsg当前要记录的消息" <<  record.data;
+    if(modid == 1){
+        client->m_user.chatHistory[modid][fromId].records.append(record);  //注意这里是toid
+    }else if(modid == 2 && fromId != client->m_user.uid){  //如果群组是自己发的消息，不处理
+        client->m_user.chatHistory[modid][toId].records.append(record);  //注意这里是toid
+
+    }else{
+        std::cout << "未知消息，已忽略" << std::endl;
+        return;
+    }
+    //发送信号，
+    emit recevidMsgNotify(modid, fromId);
+但是还有一个小问题，就是群聊时一方的客户端接收到消息了，但是需要返回再回来才能更新，而且只有一端可以，另一端发送，两端都正常。。。。。。
+发现
+
+    }else{
+        std::cout << "未知消息，已忽略" << std::endl;
+        return;
+    }
+    //发送信号，
+    emit recevidMsgNotify(modid, fromId);
+这个recevidMsgNotify的fromId);也需要进行if判断，否则不会更新窗口
+
+改成
+ if(modid == 1){
+        client->m_user.chatHistory[modid][fromId].records.append(record);  //注意这里是toid
+        //发送信号，
+        emit recevidMsgNotify(modid, fromId);
+    }else if(modid == 2 && fromId != client->m_user.uid){  //如果群组是自己发的消息，不处理
+        client->m_user.chatHistory[modid][toId].records.append(record);  //注意这里是toid
+        //发送信号，
+        emit recevidMsgNotify(modid, toId);
+这样就正常了
+
+18、发现跨服私人聊天不太正常，群聊更是不稳定，先解决私人的吧，私人就是发送端无法收到确认消息，导致发送完之后，一直不更新
+群聊发现lb服务器回复的服务器地址不太正确，比如3号用户在一台服务器a，另外两个用户在另一台服务器b，发现服务器b根本收不到消息，说明问题出在lb服务器上了
+查看日志：
+DEBUG:src/LbAgent.cpp->DealingRequest->line:382=[群聊转发正在执行]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:391=[在线群组1成员信息：]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:393=[uid：1，姓名：小李]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:393=[uid：2，姓名：Tony]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:393=[uid：3，姓名：小企鹅]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:398=[i目标服务器个数：0]
+正在执行ServerAddr拷贝构造函数
+DEBUG:src/LbAgent.cpp->DealingRequest->line:405=[uid：1，姓名：小李所在的主机：[127.0.0.1:10011]]
+DEBUG:./include/LbAgent.h->matchList->line:486=[std::get<0>(m_catch)的地址：26d26a90,当前list大小：1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:418=[targetMsgList的大小：]
+DEBUG:./include/LbAgent.h->matchList->line:486=[std::get<0>(m_catch)的地址：26d26a90,当前list大小：1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:433=[if结尾目标服务器个数：1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:398=[i目标服务器个数：1]
+正在执行ServerAddr拷贝构造函数
+DEBUG:src/LbAgent.cpp->DealingRequest->line:405=[uid：2，姓名：Tony所在的主机：[127.0.0.1:10011]]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:398=[i目标服务器个数：1]
+正在执行ServerAddr拷贝构造函数
+DEBUG:src/LbAgent.cpp->DealingRequest->line:405=[uid：3，姓名：小企鹅所在的主机：[127.0.0.1:10010]]
+DEBUG:./include/LbAgent.h->matchList->line:486=[std::get<0>(m_catch)的地址：26d26a90,当前list大小：1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:418=[targetMsgList的大小：]
+DEBUG:./include/LbAgent.h->matchList->line:486=[std::get<0>(m_catch)的地址：26d26a90,当前list大小：1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:433=[if结尾目标服务器个数：2]
+DEBUG:./include/LbAgent.h->matchList->line:486=[std::get<0>(m_catch)的地址：26d26a90,当前list大小：1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:445=[目标服务器个数：2]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:449=[需要server[ip:127.0.0.1, port:52573]帮助转发消息]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:450=[对应的udp网络地址为：server[ip:16777343, port:24013]]
+DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+DEBUG:src/Udp.cpp->sendMsg->line:129=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:130=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:24013]
+DEBUG:src/Udp.cpp->sendMsg->line:189=[当前的数据为:5,33我是用户3第一次 *]
+DEBUG:src/Udp.cpp->sendMsg->line:190=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8108,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8104,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8100,需要扩容的大小：33]
+DEBUG:src/Udp.cpp->sendMsg->line:199=[当前即将写的写缓冲区的内存情况为：m_readPos：84，m_writePos：125，getReadSize()：41，getWriteSize()：8067，data：]
+DEBUG:src/Udp.cpp->sendMsg->line:205=[压入前当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:206=[当前udp地址队列大小：0]
+DEBUG:src/Udp.cpp->sendMsg->line:212=[正在压入消息地址]
+DEBUG:src/Udp.cpp->sendMsg->line:215=[当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:216=[当前udp地址队列大小：1]
+DEBUG:src/Udp.cpp->sendMsg->line:217=[队头（网络地址）：ip：16777343, port:24013]
+DEBUG:src/Udp.cpp->sendMsg->line:218=[队尾（网络地址）：ip：16777343, port:24013]
+DEBUG:src/Udp.cpp->sendMsg->line:223=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:449=[需要server[ip:127.0.0.1, port:56339]帮助转发消息]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:450=[对应的udp网络地址为：server[ip:16777343, port:5084]]
+DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->sendMsg->line:129=[DEBUG:src/EventLoop.cpp->readMyData->line:103=[正在执行SendMsg已被唤醒,主线程说：该起来干活了]
+DEBUG:src/Udp.cpp->sendMsg->line:130=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:5084]
+]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有1个任务]
+DEBUG:src/Udp.cpp->sendMsg->line:176=[DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在强制发送消息正在给channel添加读事件]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:87=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:52573]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:402=[正在发消息给：127.0.0.1:52573]
+]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:6]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：4的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:87=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:52573]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:402=[正在发消息给：127.0.0.1:52573]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:418=[本次写到socket的字节数为：41]
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：41]
+DEBUG:src/Udp.cpp->sendMsg->line:189=[当前的数据为:5,34我是用户3第一次 *]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:418=[DEBUG:src/Udp.cpp->sendMsg->line:190=[本次写到socket的字节数为：41m_wbuffer->getReadSize():-41]
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：41]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8067,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8063,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8059,需要扩容的大小：34]
+DEBUG:src/Udp.cpp->sendMsg->line:199=[当前即将写的写缓冲区的内存情况为：m_readPos：166，m_writePos：167，getReadSize()：1，getWriteSize()：8025，data：]
+DEBUG:src/Udp.cpp->sendMsg->line:205=[压入前当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:206=[当前udp地址队列大小：-1]
+DEBUG:src/Udp.cpp->sendMsg->line:208=[队头（网络地址）：ip：0, port:0]
+DEBUG:src/Udp.cpp->sendMsg->line:209=[队尾（网络地址）：ip：16777343, port:24013]
+DEBUG:src/Udp.cpp->sendMsg->line:212=[正在压入消息地址]
+DEBUG:src/Udp.cpp->sendMsg->line:215=[当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:216=[当前udp地址队列大小：0]
+DEBUG:src/Udp.cpp->sendMsg->line:217=[epoll_wait正在处理第0件事情队头（网络地址）：ip：0, port:0]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+udp包地址为空，请检查相应发送接口
+DEBUG:src/Udp.cpp->processWrite->line:87=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:52573]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:402=[正在发消息给：127.0.0.1:52573]
+]
+DEBUG:src/Udp.cpp->sendMsg->line:218=[队尾（网络地址）：ip：16777343, port:24013]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:418=[本次写到socket的字节数为：1]
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：1]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:76=[正在关闭写事件]
+DEBUG:src/MsgRouter.cpp->call->line:34=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：10的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+然后使用netstate查看接口
+tcp        0      0 127.0.0.1:25            0.0.0.0:*               LISTEN      0          26162      -                   
+tcp        0      0 0.0.0.0:10010           0.0.0.0:*               LISTEN      1000       46166      3799/./baseServer   
+tcp        0      0 0.0.0.0:10011           0.0.0.0:*               LISTEN      1000       46183      3811/./baseServer   
+tcp6       0      0 :::3306                 :::*                    LISTEN      27         26901      -                   
+tcp6       0      0 :::111                  :::*                    LISTEN      0          16311      -                   
+tcp6       0      0 :::22                   :::*                    LISTEN      0          25918      -                   
+tcp6       0      0 ::1:631                 :::*                    LISTEN      0          24203      -                   
+tcp6       0      0 ::1:25                  :::*                    LISTEN      0          26163      -                   
+udp        0      0 0.0.0.0:40238           0.0.0.0:*                           1000       44003      3848/qtClient       
+udp        0      0 127.0.0.1:323           0.0.0.0:*                           0          22257      -                   
+udp        0      0 0.0.0.0:52573           0.0.0.0:*                           1000       46170      3799/./baseServer   
+udp        0      0 0.0.0.0:38329           0.0.0.0:*                           1000       47117      3885/qtClient       
+udp        0      0 0.0.0.0:60900           0.0.0.0:*                           1000       44028      3863/qtClient       
+udp        0      0 127.0.0.1:10001         0.0.0.0:*                           1000       42992      3781/./lbServer     
+udp        0      0 0.0.0.0:55062           0.0.0.0:*                           70         19180      -                   
+udp        0      0 0.0.0.0:877             0.0.0.0:*                           0          16307      -                   
+udp        0      0 0.0.0.0:56339           0.0.0.0:*                           1000       46187      3811/./baseServer 
+发现查找的主机是正确的，但是发送的时候就有问题了，上面日志显示第一次发给的是源主机，然后源主机过滤掉信息，一切正常，查看客户端确实是正确的，但是第二次是发给另一台服务器的，但是压入时地址出问题了，出现了当前udp地址队列大小：-1]这种情况。。。。，但是第二次地址确实是发给正在发消息给：127.0.0.1:52573]，也就是第二台主机，先把那个为-1的解决掉吧，
+而且还发现fer->getReadSize():-41]。。。。实际上是需要互斥锁保护的。。。包括这个-1也是
+发现
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：41]
+DEBUG:src/Udp.cpp->sendMsg->line:189=[当前的数据为:5,34我是用户3第一次 *]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:418=[DEBUG:src/Udp.cpp->sendMsg->line:190=[本次写到socket的字节数为：41m_wbuffer->getReadSize():-41]
+DEBUG:src/Udp.cpp->processWrite->line:107=[本次发送的字节大小为：41]
+这里打印出了两句本次发送的字节大小为：41，而源码是这样的
+	if (ret > 0) {
+			totalLen += ret;
+			//写完之后，如果没有写成功，那么写缓冲区，不会删除这个包的，所以这边也要同步，只有大于0，我才会弹出地址
+			m_sendAddrQ.pop();
+		}
+		else if (ret == 0) {
+			perror("sendto");
+			break; //当前不可写下次再写，注意这时候写事件不关闭
+		}
+		else {
+			//写失败，删除当前客户端，返回的是其他错误的-1
+			// 不用删除呀，根本就没有连接好吗
+			//m_evLoop->addTask(m_evLoop, m_evLoop->packageTask(m_channel, TaskType::DEL)); //删除对应的客户端连接
+			perror("sendto");
+			return -1;
+		}
+	}
+	Debug("本次发送的字节大小为：%d", totalLen);
+如果大于0，我就弹出一个地址。。。
+看一下这个：
+for (auto& response : responses) {
+		//取出key，转为对应的sockaddr_in
+		sockaddr_in addr = response.first;
+		Debug("需要server[ip:%s, port:%d]帮助转发消息", inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
+		Debug("对应的udp网络地址为：server[ip:%d, port:%d]", addr.sin_addr.s_addr, addr.sin_port);
+		udpSendMsg((int)lbService::ID_RepostMsgResponseTo, &response.second, &addr);
+	}
+这个实际上是mysqlClient那个线程在接到在线人员时进行操作的，然后他会写到写缓冲m_wbuff，然后执行开启读事件唤醒udp所在的线程，让udp所在线程执行writeProcess，这显然是两个线程同时读写的问题，一边是唤醒了，然后udp线程发出去了，另一个是强制发送，然后在mysql那个线程有发送了一遍。所以一定要考虑互斥锁了，但是还是不能很好的解释为啥第一次发送的时候发送了两次41，一次1个字节，再往上看看，发现这两个线程确实同时在执行processWrite，同时在写一份数据，所以会出现两次41，最后一个1大概是因为两个线程写完然后指针混乱的情况，所以必须要加互斥锁，不过互斥锁加在什么地方呢，需要保证一个线程在操作第一个地址开始，到写进对端socket之后然后弹出第一个地址截至，必须是一气呵成的，如果不是就有问题，在processWrite前后加上互斥锁就可以了？但是其他线程可能直接操作writeBuf，或者是直接调用地址队列加上去等等，在buffer属性里添加一个锁，这样其他线程调用的时候，m_write正在加锁，所以其他线程也调用不了（读写锁更高效其实），然后读写扩容的时候都进行加锁解锁操作，udp的地址队列里也为其添加一个锁，添加删除的时候，肯定有消息写到buf里了，所以需要保证这两个的一致性，也就是添加地址和添加消息是一体的，删除地址和删除消息是一体的，所以这两者前后锁一下，不过send应该是一个conn在的线程在写，一般情况下，所以锁不锁都无所谓，但是正如前面分析的那样，理论上是要锁的，详细思路是在buf那个文件里，可以仔细看看
+，确实不会出现之前很乱的局面了，但是发现lb服务器发送一个就不发了，第二个地址直接无视了
+DEBUG:src/LbAgent.cpp->DealingRequest->line:449=[需要server[ip:127.0.0.1, port:54788]帮助转发消息]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:450=[对应的udp网络地址为：server[ip:16777343, port:1238]]
+DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+DEBUG:src/Udp.cpp->sendMsg->line:132=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:133=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:1238]
+DEBUG:src/Udp.cpp->sendMsg->line:193=[当前的数据为:5,29我是用户3first *]
+DEBUG:src/Udp.cpp->sendMsg->line:194=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:53=[当前大小：8108,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:53=[当前大小：8104,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:53=[当前大小：8100,需要扩容的大小：29]
+DEBUG:src/Udp.cpp->sendMsg->line:203=[当前即将写的写缓冲区的内存情况为：m_readPos：84，m_writePos：121，getReadSize()：37，getWriteSize()：8071，data：]
+DEBUG:src/Udp.cpp->sendMsg->line:209=[压入前当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:210=[当前udp地址队列大小：0]
+DEBUG:src/Udp.cpp->sendMsg->line:216=[正在压入消息地址]
+DEBUG:src/Udp.cpp->sendMsg->line:219=[当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:220=[当前udp地址队列大小：1]
+DEBUG:src/Udp.cpp->sendMsg->line:221=[队头（网络地址）：ip：16777343, port:1238]
+DEBUG:src/Udp.cpp->sendMsg->line:222=[队尾（网络地址）：ip：16777343, port:1238]
+DEBUG:src/Udp.cpp->sendMsg->line:227=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:449=[需要server[ip:127.0.0.1, port:47196]帮助转发消息]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:450=[对应的udp网络地址为：server[ip:16777343, port:23736]]
+DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+DEBUG:src/Udp.cpp->sendMsg->line:132=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:133=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:23736]
+DEBUG:src/Udp.cpp->sendMsg->line:180=[正在强制发送消息]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有1个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:6]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+可以看到只发送了第一个
+然后到最后
+DEBUG:src/NetConnection.cpp->sendMsg->line:141=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+DEBUG:src/LbAgent.cpp->planUpdateRouter->line:112=[正在请求第二张表]
+DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+DEBUG:src/NetConnection.cpp->sendMsg->line:92=[正在执行SendMsg]
+DEBUG:src/NetConnection.cpp->sendMsg->line:101=[本次发送数据，是否激活写事件：0]
+DEBUG:src/NetConnection.cpp->sendMsg->line:120=[当前的数据为:1,2]
+DEBUG:src/NetConnection.cpp->sendMsg->line:121=[m_wbuffer->getReadSize():10]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:53=[当前大小：12,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:53=[当前大小：8,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:53=[当前大小：4,需要扩容的大小：2]
+DEBUG:src/NetConnection.cpp->sendMsg->line:135=[当前即将写的写缓冲区的内存情况为：m_readPos：0，m_writePos：20，getReadSize()：20，getWriteSize()：2，data：]
+发现死锁了。。。（因为一直停在最后一句）没有进入wait。。。。应该是buffer那里的
+再仔细看发现
+DEBUG:src/Udp.cpp->sendMsg->line:209=[压入前当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:210=[当前udp地址队列大小：0]
+DEBUG:src/Udp.cpp->sendMsg->line:216=[正在压入消息地址]
+DEBUG:src/Udp.cpp->sendMsg->line:219=[当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:220=[当前udp地址队列大小：1]
+DEBUG:src/Udp.cpp->sendMsg->line:221=[队头（网络地址）：ip：16777343, port:1238]
+DEBUG:src/Udp.cpp->sendMsg->line:222=[队尾（网络地址）：ip：16777343, port:1238]
+DEBUG:src/Udp.cpp->sendMsg->line:227=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:449=[需要server[ip:127.0.0.1, port:47196]帮助转发消息]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:450=[对应的udp网络地址为：server[ip:16777343, port:23736]]
+DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+DEBUG:src/Udp.cpp->sendMsg->line:132=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:133=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:23736]
+DEBUG:src/Udp.cpp->sendMsg->line:180=[正在强制发送消息]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+udp是被阻塞了（>processWrite->line:70=[开始组织数据并响应，预响应的消息为：]执行这一句之后就没有下文了。。。（mysql的那个线程调用sendMsg会开启写事件，然后再循环到第二次的时候mysql线程阻塞到writeBuf中的m_msgInsertMutex，然后第二个线程被唤醒，然后又执行processWrite，然后又在m_msgInsertMutex阻塞了，可以看关键开始组织数据并响应，预响应的消息为：]）），然后msyql的定时任务的函数也被阻塞了（mysql有两个线程一个是定时任务一个是负责业务的）（最后这个日志），说明udp和buffer的锁都有问题。排查的时候发现udp只用了insert的锁，这个逻辑上其实也是对的，所以先不改过来（发现如果不登录，lb和mysql交互没有问题，登录一个人lb正常，两个lb也正常，3个也正常），但是一发群消息就出现上面的情况了
+发现问题了
+DEBUG:src/Udp.cpp->sendMsg->line:134=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:135=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:36833]
+DEBUG:src/Udp.cpp->sendMsg->line:170=[sendMsg正在加锁]
+DEBUG:src/Udp.cpp->sendMsg->line:183=[正在强制发送消息]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了]
+sendMsg本来已经加一层锁了，但是如果强制发送，又加了一层自然死锁了，而我误打误撞的又使用了同一把锁，方法就是使用2把锁，而且processWrite那里注意有return没有解锁，那tcp的呢，值得注意的是这个线程一直执行（是因为其他线程都阻塞了？？），然后反复的打印
+DEBUG:src/LbAgent.cpp->planUpdateRouter->line:107=[正在请求第一张表]
+DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+DEBUG:src/NetConnection.cpp->sendMsg->line:92=[正在执行SendMsg]
+DEBUG:src/NetConnection.cpp->sendMsg->line:101=[本次发送数据，是否激活写事件：0]
+DEBUG:src/NetConnection.cpp->sendMsg->line:120=[当前的数据为:1,2]
+DEBUG:src/NetConnection.cpp->sendMsg->line:121=[m_wbuffer->getReadSize():20]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:70=[扩充Buf大小为两倍]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:76=[Buf的大小为：30]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：6,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:70=[扩充Buf大小为两倍]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:76=[Buf的大小为：34]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/NetConnection.cpp->sendMsg->line:135=[当前即将写的写缓冲区的内存情况为：m_readPos：0，m_writePos：30，getReadSize()：30，getWriteSize()：4，data：]
+DEBUG:src/LbAgent.cpp->planUpdateRouter->line:112=[正在请求第二张表]
+DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+DEBUG:src/NetConnection.cpp->sendMsg->line:92=[正在执行SendMsg]
+DEBUG:src/NetConnection.cpp->sendMsg->line:101=[本次发送数据，是否激活写事件：0]
+DEBUG:src/NetConnection.cpp->sendMsg->line:120=[当前的数据为:1,2]
+DEBUG:src/NetConnection.cpp->sendMsg->line:121=[m_wbuffer->getReadSize():30]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:70=[扩充Buf大小为两倍]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:76=[Buf的大小为：42]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：4,需要扩容的大小：2]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/NetConnection.cpp->sendMsg->line:135=[当前即将写的写缓冲区的内存情况为：m_readPos：0，m_writePos：40，getReadSize()：40，getWriteSize()：2，data：]
+DEBUG:src/LbAgent.cpp->planUpdateRouter->line:107=[正在请求第一张表]
+DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+（连续18次请求，buf里面每次多10个字节）不过最终阻塞的位置和上次一样。。。。不对，这个定时任务没有阻塞，我是按了ctrl+s，以为阻塞了（后面按q之后继续更新了），这个也是有问题的，因为一直唤不醒mysql那个线程，也就是mysql那个线程被阻塞了，所以还是上面那个问题就是使用两个互斥锁就可以了
+改完之后还是收不到消息
+DEBUG:src/LbAgent.cpp->DealingRequest->line:382=[群聊转发正在执行]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:391=[在线群组1成员信息：]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:393=[uid：1，姓名：小李]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:393=[uid：2，姓名：Tony]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:393=[uid：3，姓名：小企鹅]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:398=[i目标服务器个数：0]
+正在执行ServerAddr拷贝构造函数
+DEBUG:src/LbAgent.cpp->DealingRequest->line:405=[uid：1，姓名：小李所在的主机：[127.0.0.1:10011]]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:418=[targetMsgList的大小：]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:433=[if结尾目标服务器个数：1]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:398=[i目标服务器个数：1]
+正在执行ServerAddr拷贝构造函数
+DEBUG:src/LbAgent.cpp->DealingRequest->line:405=[uid：2，姓名：Tony所在的主机：[127.0.0.1:10011]]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:398=[i目标服务器个数：1]
+正在执行ServerAddr拷贝构造函数
+DEBUG:src/LbAgent.cpp->DealingRequest->line:405=[uid：3，姓名：小企鹅所在的主机：[127.0.0.1:10010]]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:418=[targetMsgList的大小：]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:433=[if结尾目标服务器个数：2]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:445=[目标服务器个数：2]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:449=[需要server[ip:127.0.0.1, port:60285]帮助转发消息]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:450=[对应的udp网络地址为：server[ip:16777343, port:32235]]
+DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+DEBUG:src/Udp.cpp->sendMsg->line:135=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:136=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:32235]
+DEBUG:src/Udp.cpp->sendMsg->line:171=[sendMsg正在加锁]
+DEBUG:src/Udp.cpp->sendMsg->line:197=[当前的数据为:5,45"我是最后一次发消息了3号 *]
+DEBUG:src/Udp.cpp->sendMsg->line:198=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8108,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:114=[writeToBuffer1解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8104,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:114=[writeToBuffer1解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8100,需要扩容的大小：45]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:114=[writeToBuffer1解锁]
+DEBUG:src/Udp.cpp->sendMsg->line:207=[当前即将写的写缓冲区的内存情况为：m_readPos：84，m_writePos：137，getReadSize()：53，getWriteSize()：8055，data：]
+DEBUG:src/Udp.cpp->sendMsg->line:213=[压入前当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:214=[当前udp地址队列大小：0]
+DEBUG:src/Udp.cpp->sendMsg->line:220=[正在压入消息地址]
+DEBUG:src/Udp.cpp->sendMsg->line:223=[当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:224=[当前udp地址队列大小：1]
+DEBUG:src/Udp.cpp->sendMsg->line:225=[队头（网络地址）：ip：16777343, port:32235]
+DEBUG:src/Udp.cpp->sendMsg->line:226=[队尾（网络地址）：ip：16777343, port:32235]
+DEBUG:src/Udp.cpp->sendMsg->line:231=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+DEBUG:src/Udp.cpp->sendMsg->line:235=[sendMsg正在解锁]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:449=[需要server[ip:127.0.0.1, port:48329]帮助转发消息]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:450=[对应的udp网络地址为：server[ip:16777343, port:51644]]
+DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+DEBUG:src/Udp.cpp->sendMsg->line:135=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:136=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:51644]
+DEBUG:src/Udp.cpp->sendMsg->line:171=[sendMsg正在加锁]
+DEBUG:src/Udp.cpp->sendMsg->line:184=[正在强制发送消息]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:81=[processWrite正在加锁]
+DEBUG:src/Udp.cpp->processWrite->line:89=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:60285]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:453=[正在发消息给：127.0.0.1:60285]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发DEBUG:src/Buffer.cpp->writeBufferToSocket->line:455=[]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+writeBufferToSocket2加锁]
+DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有1个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:6]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：4的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:472=[writeBufferToSocket2解锁]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:475=[本次写到socket的字节数为：53]
+DEBUG:src/Udp.cpp->processWrite->line:110=[processWrite正在解锁]
+DEBUG:src/Udp.cpp->processWrite->line:112=[本次发送的字节大小为：53]
+DEBUG:src/Udp.cpp->sendMsg->line:197=[当前的数据为:5,46"我是最后一次发消息了3号 *]
+DEBUG:src/Udp.cpp->sendMsg->line:198=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8055,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:114=[writeToBuffer1解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8051,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:114=[writeToBuffer1解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8047,需要扩容的大小：46]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:114=[writeToBuffer1解锁]
+DEBUG:src/Udp.cpp->sendMsg->line:207=[当前即将写的写缓冲区的内存情况为：m_readPos：137，m_writePos：191，getReadSize()：54，getWriteSize()：8001，data：]
+DEBUG:src/Udp.cpp->sendMsg->line:213=[压入前当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:214=[当前udp地址队列大小：0]
+DEBUG:src/Udp.cpp->sendMsg->line:220=[正在压入消息地址]
+DEBUG:src/Udp.cpp->sendMsg->line:223=[当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:224=[当前udp地址队列大小：1]
+DEBUG:src/Udp.cpp->sendMsg->line:225=[队头（网络地址）：ip：16777343, port:51644]
+DEBUG:src/Udp.cpp->sendMsg->line:226=[队尾（网络地址）：ip：16777343, port:51644]
+DEBUG:src/Udp.cpp->sendMsg->line:235=[sendMsg正在解锁]
+DEBUG:src/MsgRouter.cpp->call->line:34=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：10的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Udp.cpp->processWrite->line:81=[processWrite正在加锁]
+DEBUG:src/Udp.cpp->processWrite->line:89=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:48329]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:453=[正在发消息给：127.0.0.1:48329]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:455=[writeBufferToSocket2加锁]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:472=[writeBufferToSocket2解锁]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:475=[本次写到socket的字节数为：53]
+DEBUG:src/Udp.cpp->processWrite->line:110=[processWrite正在解锁]
+DEBUG:src/Udp.cpp->processWrite->line:112=[本次发送的字节大小为：53]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:81=[processWrite正在加锁]
+udp包地址为空，请检查相应发送接口
+DEBUG:src/Udp.cpp->processWrite->line:89=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:60285]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:453=[正在发消息给：127.0.0.1:60285]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:455=[writeBufferToSocket2加锁]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:472=[writeBufferToSocket2解锁]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:475=[本次写到socket的字节数为：1]
+DEBUG:src/Udp.cpp->processWrite->line:110=[processWrite正在解锁]
+DEBUG:src/Udp.cpp->processWrite->line:112=[本次发送的字节大小为：1]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+可以看这个日志，发送是发送成功了，但是基础服务器收不到，注意，这个字节数为1不是之前以为的指针多线程操作导致混乱，而是内容为0，直接返回1代表写完成，但是这其实是有问题的，不过可以后面再改
+，看日志可以发现确实是发过去了
+然后发现
+[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:359=[读到socket的数据大小为：53,当前Buf的情况为：，当前读指针：0，当前写指针：53]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:380=[readSocketToBuffer2解锁]
+DEBUG:src/Udp.cpp->processRead->line:44=[正在解析数据]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:157=[readFromBuffer正在执行，size：4, getReadSize:53]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:165=[readFromBuffer1加锁]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:180=[readFromBuffer1解锁]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:157=[readFromBuffer正在执行，size：4, getReadSize:49]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:165=[readFromBuffer1加锁]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:180=[readFromBuffer1解锁]
+DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:5, this->m_msglen:46]
+DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：8，读缓冲区的写指针为：53]
+DEBUG:src/Message.cpp->getRequest->line:97=[MsgBody正在HandleState::WaitingBody， m_msglen为：46,getReadSize为45]
+包长度不足，已忽略
+基础服务器忽略该包了（a，两个用户），长度少一个字节，为啥第一个包（另一台服务器b，1个用户）就可以发送成了
+另一台服务器算出来的长度为[this->m_msgid:5, this->m_msglen:45]
+而这个服务器的msglen是46？？？？这不是写死的吗
+发现之前猜测的1个字节想法都是错误的，这一个字节是有效字节，第一次发送的是53个字节（给b），第二次发送的应该是54个字节（给a，因为两个用户多用一个字节），但是第二次不知道为啥又发送53个字节了，然后还剩一个字节，但是地址空了，然后从recvAddr那里结果又发到了b那，导致b无法处理该包，第二次应该是发送完所有的字节，查看第二次sendMsg时压入的大小
+这是b服务器的日志：
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:359=[读到socket的数据大小为：1,当前Buf的情况为：，当前读指针：0，当前写指针：1]
+DEBUG:src/Buffer.cpp->readSocketToBuffer->line:380=[readSocketToBuffer2解锁]
+DEBUG:src/Udp.cpp->processRead->line:44=[正在解析数据]
+DEBUG:src/Message.cpp->getRequest->line:82=[buf->getReadSize() < MSG_HEAD_LEN]
+包长度不足，已忽略
+DEBUG:src/Buffer.cpp->readFromBuffer->line:157=[readFromBuffer正在执行，size：1, getReadSize:1]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:165=[readFromBuffer1加锁]
+DEBUG:src/Buffer.cpp->readFromBuffer->line:171=[readFromBuffer1解锁]
+DEBUG:src/Udp.cpp->processRead->line:58=[读事件是否开启；1]
+和我上面描述的一致，确实发给b服务器了
+当前即将写的写缓冲区的内存情况为：m_readPos：137，m_writePos：191，getReadSize()：54，getWriteSize()：8001，data：]
+发现是54.。。。，但是写进去的却是：本次写到socket的字节数为：53，发现问题了
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Udp.cpp->processWrite->line:81=[processWrite正在加锁]
+DEBUG:src/Udp.cpp->processWrite->line:89=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:48329]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:453=[正在发消息给：127.0.0.1:48329]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:455=[writeBufferToSocket2加锁]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:472=[writeBufferToSocket2解锁]
+发现wait之后
+int pkgLen = m_wbuffer->getReadSize(); 
+	Debug("开始组织数据并响应，预响应的消息为：%s，大小为：%d", m_wbuffer->m_data + m_wbuffer->m_readPos, pkgLen);
+	int ret = 0;
+	int totalLen = 0;
+	//在写lb服务器转发消息的时候，按照lb服务器主要bug里面的20逻辑改了之后，如下
+	if (pkgLen <= 0) {
+		Debug("正在关闭写事件");
+		m_channel->writeEnable(false); //将当前的channel开启写事件，注意这个开启之后，还没更新到检测树上，还需要任务队列-》处理任务-》判断这个channel的读写事件并更新到树上
+		m_evLoop->addTask(m_evLoop, m_evLoop->packageTask(m_channel, TaskType::MODI));  //这个代码块在这里的话，不会进行唤醒操作，前提是创建的线程和运行的是同一个
+	}
+	m_msgRemoveMutex.lock();  //保证当前消息和地址能够保持一致
+	Debug("processWrite正在加锁");
+	while (totalLen < pkgLen) { //应该是< 而不是<=
+		if (m_sendAddrQ.size() == 0) {
+			//如果为0说明上层是有问题的，那么该怎么办，应该消耗掉这个包，让影响最低，怎么消耗呢
+			//将接收的包地址压入队列
+			std::cout << "udp包地址为空，请检查相应发送接口" << std::endl;
+			m_sendAddrQ.push(m_recvAddr);  //这个也有隐患，可能里面啥都没有
+并没有执行这一句：Debug("开始组织数据并响应，预响应的消息为：%s，大小为：%d", m_wbuffer->m_data + m_wbuffer->m_readPos, pkgLen);，而是直接执行加锁了
+懂了。。。很古怪的错误
+这是完整的日志
+DEBUG:src/Udp.cpp->sendMsg->line:136=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:32235]
+DEBUG:src/Udp.cpp->sendMsg->line:171=[sendMsg正在加锁]
+DEBUG:src/Udp.cpp->sendMsg->line:197=[当前的数据为:5,45"我是最后一次发消息了3号 *]
+DEBUG:src/Udp.cpp->sendMsg->line:198=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8108,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:114=[writeToBuffer1解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8104,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:114=[writeToBuffer1解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8100,需要扩容的大小：45]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:114=[writeToBuffer1解锁]
+DEBUG:src/Udp.cpp->sendMsg->line:207=[当前即将写的写缓冲区的内存情况为：m_readPos：84，m_writePos：137，getReadSize()：53，getWriteSize()：8055，data：]
+DEBUG:src/Udp.cpp->sendMsg->line:213=[压入前当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:214=[当前udp地址队列大小：0]
+DEBUG:src/Udp.cpp->sendMsg->line:220=[正在压入消息地址]
+DEBUG:src/Udp.cpp->sendMsg->line:223=[当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:224=[当前udp地址队列大小：1]
+DEBUG:src/Udp.cpp->sendMsg->line:225=[队头（网络地址）：ip：16777343, port:32235]
+DEBUG:src/Udp.cpp->sendMsg->line:226=[队尾（网络地址）：ip：16777343, port:32235]
+DEBUG:src/Udp.cpp->sendMsg->line:231=[SendMsg正在激活写事件]
+DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+DEBUG:src/Udp.cpp->sendMsg->line:235=[sendMsg正在解锁]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:449=[需要server[ip:127.0.0.1, port:48329]帮助转发消息]
+DEBUG:src/LbAgent.cpp->DealingRequest->line:450=[对应的udp网络地址为：server[ip:16777343, port:51644]]
+DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+DEBUG:src/Udp.cpp->sendMsg->line:135=[正在执行SendMsg]
+DEBUG:src/Udp.cpp->sendMsg->line:136=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:51644]
+DEBUG:src/Udp.cpp->sendMsg->line:171=[sendMsg正在加锁]
+DEBUG:src/Udp.cpp->sendMsg->line:184=[正在强制发送消息]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:81=[processWrite正在加锁]
+DEBUG:src/Udp.cpp->processWrite->line:89=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:60285]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:453=[正在发消息给：127.0.0.1:60285]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发DEBUG:src/Buffer.cpp->writeBufferToSocket->line:455=[]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+writeBufferToSocket2加锁]
+DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有1个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:6]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：4的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:472=[writeBufferToSocket2解锁]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:475=[本次写到socket的字节数为：53]
+DEBUG:src/Udp.cpp->processWrite->line:110=[processWrite正在解锁]
+DEBUG:src/Udp.cpp->processWrite->line:112=[本次发送的字节大小为：53]
+DEBUG:src/Udp.cpp->sendMsg->line:197=[当前的数据为:5,46"我是最后一次发消息了3号 *]
+DEBUG:src/Udp.cpp->sendMsg->line:198=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8055,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:114=[writeToBuffer1解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8051,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:114=[writeToBuffer1解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:110=[writeToBuffer1加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8047,需要扩容的大小：46]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:88=[resizeBuffer解锁]
+DEBUG:src/Buffer.cpp->writeToBuffer->line:114=[writeToBuffer1解锁]
+DEBUG:src/Udp.cpp->sendMsg->line:207=[当前即将写的写缓冲区的内存情况为：m_readPos：137，m_writePos：191，getReadSize()：54，getWriteSize()：8001，data：]
+DEBUG:src/Udp.cpp->sendMsg->line:213=[压入前当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:214=[当前udp地址队列大小：0]
+DEBUG:src/Udp.cpp->sendMsg->line:220=[正在压入消息地址]
+DEBUG:src/Udp.cpp->sendMsg->line:223=[当前udp地址队列情况：]
+DEBUG:src/Udp.cpp->sendMsg->line:224=[当前udp地址队列大小：1]
+DEBUG:src/Udp.cpp->sendMsg->line:225=[队头（网络地址）：ip：16777343, port:51644]
+DEBUG:src/Udp.cpp->sendMsg->line:226=[队尾（网络地址）：ip：16777343, port:51644]
+DEBUG:src/Udp.cpp->sendMsg->line:235=[sendMsg正在解锁]
+DEBUG:src/MsgRouter.cpp->call->line:34=[调用业务回调函数成功]
+DEBUG:src/Message.cpp->analyze->line:36=[request状态已修改为 HandleState::MsgHead]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：10的读事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Udp.cpp->processWrite->line:81=[processWrite正在加锁]
+DEBUG:src/Udp.cpp->processWrite->line:89=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:48329]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:453=[正在发消息给：127.0.0.1:48329]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:455=[writeBufferToSocket2加锁]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:472=[writeBufferToSocket2解锁]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:475=[本次写到socket的字节数为：53]
+DEBUG:src/Udp.cpp->processWrite->line:110=[processWrite正在解锁]
+DEBUG:src/Udp.cpp->processWrite->line:112=[本次发送的字节大小为：53]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:81=[processWrite正在加锁]
+udp包地址为空，请检查相应发送接口
+DEBUG:src/Udp.cpp->processWrite->line:89=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:60285]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:453=[正在发消息给：127.0.0.1:60285]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:455=[writeBufferToSocket2加锁]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:472=[writeBufferToSocket2解锁]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:475=[本次写到socket的字节数为：1]
+DEBUG:src/Udp.cpp->processWrite->line:110=[processWrite正在解锁]
+DEBUG:src/Udp.cpp->processWrite->line:112=[本次发送的字节大小为：1]
+DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：6的写事件响应完成]
+DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:76=[正在关闭写事件]
+这下面的日志是关键点
+DEBUG:src/Udp.cpp->sendMsg->line:136=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:51644]
+DEBUG:src/Udp.cpp->sendMsg->line:171=[sendMsg正在加锁]
+DEBUG:src/Udp.cpp->sendMsg->line:184=[正在强制发送消息]
+DEBUG:src/Udp.cpp->processWrite->line:70=[开始组织数据并响应，预响应的消息为：]
+DEBUG:src/Udp.cpp->processWrite->line:81=[processWrite正在加锁]
+DEBUG:src/Udp.cpp->processWrite->line:89=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:60285]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:453=[正在发消息给：127.0.0.1:60285]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发DEBUG:src/Buffer.cpp->writeBufferToSocket->line:455=[]
+DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+writeBufferToSocket2加锁]
+DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有1个任务]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:6]
+DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+大概过程是这样的，首先lb服务器给第一个服务器sendMsg，这个时候写到写缓存里了，然后这个时候第二次sendMsg的时候发现地址不同，然后执行sendMsg，这个时候执行到DEBUG:src/Udp.cpp->processWrite->line:89=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:60285]
+DEBUG:src/Buffer.cpp->writeBufferToSocket->line:453=[正在发消息给：127.0.0.1:60285]
+DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发DEBUG:src/Buffer.cpp->writeBufferToSocket->line:455=[]这个的时候，发现切换进程了，被唤醒是第一次sendMsg的时候主动唤醒的，这个线程也是udp所在的线程，结果这个线程唤醒之后执行processWrite，但是由于第二个sendMsg还没写到缓冲54个字节，所以目前只有53个字节，所以这个唤醒发送53个字节到b服务器，然后processWrite执行完，这个时候执行完第二次sendMsg的强制发送，然后开始往里面写数据，写进去54个，
+但是执行完sendMsg之后，进入wait休眠了，mysql的那个线程的还在processWrite那里，但是那个processWrite的获取字节的已经执行完了，是第一次的53，结果就只能发53个了，感觉好像有些不对，那个没执行完的process好像已经执行到发到对端那一步了
+结合线程id再打印一下，如果还出现这种卡着切换线程，绝对是互斥锁的问题了，发现还是没有，那就是互斥锁的问题了，然后再打印，发现好乱呀，根本理不清，而且和上面的过程又不一样了（而且第二次发送的是8个字节），感觉还是互斥锁有问题，把锁定的范围缩小一点看看（因为resize那块大量的加锁解锁其实完全没必要，但是processWrite可能正在写，那就导致这个线程阻塞了，然后就会起连锁反应，所以这个扩容的读锁要加的很小），果然正常了。。。。。但是也只是频率降低了，还是有上面的收不到的现象
+比如下面的
+threadID:140590904162048DEBUG:src/Udp.cpp->sendMsg->line:232=[SendMsg正在激活写事件]
+threadID:140590904162048DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+threadID:140590904162048DEBUG:src/LbAgent.cpp->DealingRequest->line:449=[需要server[ip:127.0.0.1, port:51937]帮助转发消息]
+threadID:140590904162048DEBUG:src/LbAgent.cpp->DealingRequest->line:450=[对应的udp网络地址为：server[ip:16777343, port:57802]]
+threadID:140590904162048DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+threadID:140590904162048DEBUG:src/Udp.cpp->sendMsg->line:135=[正在执行SendMsg]
+threadID:140590904162048DEBUG:src/Udp.cpp->sendMsg->line:136=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:57802]
+threadID:140590904162048DEBUG:src/Udp.cpp->sendMsg->line:171=[sendMsg正在加锁]
+threadID:140590904162048DEBUG:src/Udp.cpp->sendMsg->line:184=[正在强制发送消息]
+threadID:threadID:140590904162048DEBUG:src/Udp.cpp->processWrite->line:71=[开始组织数据并响应，预响应的消息为：，大小为：34]
+threadID:140590904162048DEBUG:src/Udp.cpp->processWrite->line:81=[processWrite正在加锁]
+threadID:140590904162048DEBUG:src/Udp.cpp->processWrite->line:89=[processWrite：当前要发送的地址信息：ip：127.0.0.1, port:51788]
+threadID:140590904162048DEBUG:src/Buffer.cpp->writeBufferToSocket->line:460=[正在发消息给：127.0.0.1:51788]
+threadID:140590904162048DEBUG:src/Buffer.cpp->writeBufferToSocket->line:462=[writeBufferToSocket2加锁]
+140590912554752DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+threadID:140590912554752DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+threadID:140590912554752DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了]
+threadID:140590912554752DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有1个任务]
+threadID:140590912554752DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+threadID:140590912554752DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:6]
+threadID:140590912554752DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+threadID:140590912554752DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：4的读事件响应完成]
+threadID:140590912554752DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+threadID:140590912554752DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+threadID:140590912554752DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+threadID:140590912554752DEBUG:src/Udp.cpp->processWrite->line:71=[开始组织数据并响应，预响应的消息为：，大小为：0]
+其实和上面的流程一样，到这个预响应的消息为0，就不符合预期了，因为我的目的是强制process把第一个消息发出去，然后第二个唤醒把第二个消息发出去，结果第一个刚到writeBufferToSocket2加锁就休眠了，但是数据都发到对端了，所以第二个线程（udp所在的线程）就唤醒的不是时候，应该等到process执行完，然后写进去数据之后，再唤醒的，然后就导致后面全乱了。（每次还都不一样的那种）
+所以问题出在（解决最先的那个问题），我如果执行了强制执行，并且开启了写事件，我并不希望强制执行期间以及将下一个事件写到写缓冲之前，我并不希望写事件被触发，而是强制执行结束一直到数据写进去完全了，才可以唤醒（还需要注意的一点是，这个udp一直是在epollwaitr上的，和之前那个修改udp的还不太一样，当时考虑的是udp等待事件，然后连续发送不同的事件到不同的主机，但是这个udp不接受数据，一直是wait的，是mysqlwait完成，然后往udp的buf里写数据等操作），所以之前默认的添加唤醒任务或者直接唤醒之后，还要等待这次wait的全部逻辑执行完，才能触发（这个时候的所有的数据早就准备好了，更不用说上面提到的要求了），而这次的wait显然你只要添加唤醒任务，或者唤醒执行完，那么就可能随时醒来去发送数据，这个时候数据完全可能没有准备好，这个时候就需要额外的力量再次进行同步了，但是同步条件好像和
+	if (pkgLen <= 0) {
+		Debug("正在关闭写事件");
+		m_channel->writeEnable(false); //将当前的channel开启写事件，注意这个开启之后，还没更新到检测树上，还需要任务队列-》处理任务-》判断这个channel的读写事件并更新到树上
+		m_evLoop->addTask(m_evLoop, m_evLoop->packageTask(m_channel, TaskType::MODI));  //这个代码块在这里的话，不会进行唤醒操作，前提是创建的线程和运行的是同一个
+	}
+和之前的这个先撞南墙再关闭写事件这个条件重复了（并且这个条件需要改成地址是否为空，而不应该是len，而且关闭事件不能通过任务的方式，而应该直接调用，因为日志看了发现可能回到wait第一个是写事件，第二个才是关闭写事件，就会导致又进行一个空循环），导致如果为0，会一直阻塞在这，而回不到wait那里了（如果有数据继续发送，那么可以唤醒），可以使用下面的条件
+if (m_sendAddrQ.size() <= 0) {
+		Debug("正在关闭写事件");
+		m_channel->writeEnable(false); //将当前的channel开启写事件，注意这个开启之后，还没更新到检测树上，还需要任务队列-》处理任务-》判断这个channel的读写事件并更新到树上
+		m_evLoop->addTask(m_evLoop, m_evLoop->packageTask(m_channel, TaskType::MODI));  //这个代码块在这里的话，不会进行唤醒操作，前提是创建的线程和运行的是同一个
+	}
+m_sendAddrQ.size() <= 0这一个可以保证，udp线程至少要等到sendMsg添加好数据之后，插入好地址才可以执行，而process的互斥锁又可以保证即使udp线程唤醒执行了process，也会立马阻塞下去（等待这个锁解除之后，才会自动醒来）
+为什么会有这么一个条件呢，第一次发送肯定开启写事件，这个时候执行完sendMsg，子线程可以随时醒来去发送数据，那么第二次执行sendMsg的时候，在执行强制发送之前，你随时都可以醒来（因为都是是否开启写事件），你醒来就是去发我第一个sendMsg的数据，但是一旦我第二次sendMsg强制执行了proess，那么你就必须在我第二次sendMsg添加完地址才能醒来（因为我的强制发送已经预定了第一份地址，你醒来也只能等第二份地址，不醒来更好），（如果第二次不执行processWrite，那好像还真有问题了，那可能就是发了一个半包左右，但是问题不大，解析层可以解析，但是我写到一半，那后面一半地址队列中没地址了。。。。。）即使你提前醒来了，也不能发送，所以才会改成m_sendAddrQ.size() <= 0，但是还有一个小问题，假设他中间醒来了，关闭了写事件，该怎么办？？？？？？所以目前的需求就是在执行sendMsg的时候不能执行processWrite，这样上面的问题都没有了，那怎么改呢，使用c++11的递归锁，在sendMsg执行之前锁住，在writeProcess执行结束解开（好像也不太行，执行的sendMsg和write次数不一致）（而且之前没有考虑过同一个线程多次执行同一个sendMsg会不会死锁，会可以看大饼）这到底该咋办？？可以sendMsg和process都在执行前后使用同一个递归锁？
+经过一个晚上加上一个早上的思考，终于想出了如何解决多线程多目的地址真正缓冲发送的机制：
+首先需要改进地址队列，每个地址队列需要增加一个对应消息的大小，然后在每次sendMsg之后会唤醒可能阻塞在process上条件变量上的另一个线程，并且每次processWrite之后决定是否开启写事件（每次sendMsg之前都会独立判断当前是否应该开启写事件），sendMsg中不再有强制发送机制。（这样每次执行sendMsg时必然不会执行processWrite，执行processWrite的时候也不会执行sendMsg），那么具体是怎么工作的呢，先看单线程，单线程wait完之后会一直连续执行sendMsg，直到上层不再有发送任务，然后回到wait，然后执行processWrite，当每次取一个地址发送完成之后，最终会在判断地址栏为空的情况下，停止发送。这个逻辑很清晰；再看多线程，上层业务执行第一次sendMsg之后，此时肯定会唤醒udp所在的线程（并且还会试图唤醒阻塞在processWrite上的发送线程，正常情况第一次肯定是在wait上的），而udp线程此刻正处于wait中，这个时候就随时都可能醒来，但是如果你再次执行sendMsg，那么又会加锁，这个时候会直接执行到再添加一个地址和一条消息，中间process不可能会执行，即使醒来也会阻塞在条件变量上，然后第二次sendMsg，会唤醒条件变量上的线程，这个时候条件变量上的process可能有阻塞的线程，也可能没有阻塞的线程，如果有也不一定抢到时间片，比如如果执行processWrite，那么sendMsg就不会执行，然后假如只发送了一个事件，回到wait之后，又被sendMsg抢到时间片，这个时候肯定不会开启写事件了，这也无妨，本身里面还有数据，如果上次发送完了呢，那么sendMsg会再次主动开启写事件，所以这个很完美，但是有一个小的不太好的地方，就是如果发送的第一个地址和第二个地址是一样的，但是第一个sendMsg完之后，执行了processWrite，那么就会发送了，其实是可以和第二个一起发送的，当让也可能sendMsg抢到了时间片，那么就可以一起发送了，（有没有解决方法呢？）。上面的思想本质上还是很朴素的，就是如果有消息要发到对端我就先确定是否开启，确保udp能从wait唤醒，跑到条件变量上阻塞，也可以说如果udp线程阻塞在了条件变量上，说明一定是有事件要发送的。然后procseeWrite发送完，我就看看是否还有地址要发送，如果没有那我先关闭回到wait，你有事再叫我去条件变量上阻塞，如果有地址的话，我就把当前的消息缓冲全都发过去了，（这个时候大概率会关闭写事件），（其实这就不支持边写边发了。。。对吧，只能交错的进行，底层buf是支持边写边发的，这能不能优化？sendMsg就不加锁，这样就直接唤醒到条件变量，但是条件变量会加锁，其他线程还是不能写，其实还是不行的，假如我的第一个sendMsg和第二个sendMsg地址相同，但是如果不加锁，假如process执行到了获取大小，这个时候切换到第二个sendMsg，这个时候虽然地址相同，但是当前地址即将被弹出，可以考虑在地址的结构体增加一个字段，表示是否保留该地址，可以解决这个问题，但是实际上还是分两次发送，只不过可能支持同时读写）所以这个逻辑比较正确
+不管了，先改成上面的吧，看看有没有什么问题
+对于多线程的bug调试心得：打印日志，找到第一个不符合预期的地方，这个就是关键点，然后像捋绳一样顺着这股劲就顺了，而不要企图研究所有的不符合预期的地方，企图通过日志搞清所有的执行逻辑，这个很费精力，而且越陷越深
+最终设计如下：
+struct sendMsgInfo {
+	sockaddr_in addr;
+	int msgLen;
+	int flag; //预留，比如标记是否发送成功等，或者优先级，是否保留当前地址等等
+};
+删除之前的两把锁
+std::mutex m_msgInsertMutex;
+std::mutex m_msgRemoveMutex;
+改成一个条件变量
+std::mutex m_sendMutex;
+std::contidional_variable m_sendCond;
+下面这个判断条件有问题：
+	if (m_wbuffer->getReadSize() == 0) { 
+		if (!m_channel->writeIsEnable()) {//如果没有缓冲，且没有开启写事件，那么可以开启
+			WriteIsActive = true;
+		}
+		//如果已经开启，那么就不必要再走一遍addTask了
+	}
+我根本不需要判断缓冲是否有数据，我如果执行sendMsg，应该是直接判断是否开启了写事件，因为我这个执行完，肯定有任务要让processWrite去干，所以直接改成
+if (!m_channel->writeIsEnable()) {没有开启写事件，那么开启
+	WriteIsActive = true;
+}
+至于else的肯定是不用开启了，那就直接记录
+其他的改动见源文件吧，这里不记录了（主要是sendMsg增加的时候记录了对应的消息长度，并且有唤醒机制；process则是从之前的一次只能发送一个地址，变成发送多个地址，并且可以被sendMsg唤醒，相当于可以在两个地方阻塞，也变成了发送完消息主动关闭写事件的策略，不过是直接调用写事件的，而不是通过任务的方式，如果是任务的方式，会出错）
+但是改动完一测，直接登录不上了，lb服务器可以看到在线人数1，但是客户端一直处于没收到消息的状态，可以断定是回复的消息没有发送成功，还在缓冲区
+发现是没有问题的呀，lb服务器也返回成功了呀
+发现确实客户端确实收到了，但是
+threadID:140350959576832DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+threadID:140350959576832DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树17有2事件触发]
+threadID:140350959576832DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+卡在这里了，肯定是阻塞在哪个地方了，发现问题了，processWrite，关掉写事件不能使用addTask，而应该直接关掉，因为可能回到wait先触发写事件，导致添加的删除任务就在第二位了，但是如果先触发写事件，那就直接回到processWrite那里阻塞了，然后就会一直阻塞，（注意，那个删除写事件任务和写事件触发的先后顺序不固定），但是之前提供的有直接修改的函数呀。。。。改一下调用方式即可
+完美解决，测试了4个人同时在线，测到10个人的群看看可不可以（中间有一次发的很长的消息没收到，其他的都正常，大概8人左右，不过当时没有日志，就暂时忽略了，后面又测了3人很长的，也都正确）
+，上面解决完之后，所有的都正常了，也不会消息跑错，消息不显示等等，一切都比较正常
+但是发现最后一个用户退不出去，不知道啥原因，有时候又可以退出去。。。这个先不管了，初步发现下线是没问题了（客户端基础服务器以及lb服务器在线情况都没问题），但是第二次上线进行登录操作执行的很诡异
+threadID:140717991360256DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+登陆页面进行登陆操作
+threadID:140717991360256DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：31的写事件响应完成]
+threadID:140717991360256DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第1件事情]
+threadID:140717991360256DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了该起来干活了]
+threadID:140717991360256DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有2个任务]
+登陆操作
+threadID:140717991360256DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+threadID:140717991360256DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:31]
+threadID:140717991360256DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+threadID:140717991360256DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+threadID:140717991360256DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:31]
+threadID:140717991360256DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+threadID:140717991360256DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：22的读事件响应完成]
+threadID:140717991360256DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+threadID:140717999752960DEBUG:src/MsgRouter.cpp->call->line:72=[调用业务回调函数成功]
+threadID:140717999752960DEBUG:src/Message.cpp->analyze->line:55=[request状态已修改为 HandleState::MsgHead]
+threadID:140717999752960DEBUG:src/Buffer.cpp->readFromBuffer->line:164=[readFromBuffer正在执行，size：4, getReadSize:12]
+threadID:140717999752960DEBUG:src/Buffer.cpp->readFromBuffer->line:172=[readFromBuffer1加锁]
+threadID:140717999752960DEBUG:src/Buffer.cpp->readFromBuffer->line:187=[readFromBuffer1解锁]
+threadID:140717999752960DEBUG:src/Buffer.cpp->readFromBuffer->line:164=[readFromBuffer正在执行，size：4, getReadSize:8]
+threadID:140717999752960DEBUG:src/Buffer.cpp->readFromBuffer->line:172=[readFromBuffer1加锁]
+threadID:140717999752960DEBUG:src/Buffer.cpp->readFromBuffer->line:187=[readFromBuffer1解锁]
+threadID:140717999752960DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:2, this->m_msglen:4]
+threadID:140717999752960DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：36，读缓冲区的写指针为：40]
+threadID:140717999752960DEBUG:src/Buffer.cpp->readFromBuffer->line:233=[readFromBuffer3加锁]
+threadID:140717999752960DEBUG:src/Buffer.cpp->readFromBuffer->line:240=[readFromBuffer3解锁]
+threadID:140717999752960DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为 ,大小为：4]
+threadID:140717999752960DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：40，读缓冲区的写指针为：40]
+threadID:140717999752960DEBUG:src/Message.cpp->analyze->line:49=[当前数据解析成功,msgid：2，msglen：4，m_data  ]
+threadID:140717999752960DEBUG:src/Message.cpp->analyze->line:50=[Response,读缓冲区的读指针为：40，读缓冲区的写指针为：40]
+threadID:140717999752960DEBUG:src/MsgRouter.cpp->call->line:61=[当前业务序号：2]
+threadID:140717999752960DEBUG:src/MsgRouter.cpp->call->line:69=[Udp的地址：125a960]
+threadID:140717999752960DEBUG:src/MsgRouter.cpp->call->line:70=[userData的地址：0]
+threadID:140717999752960DEBUG:../qtClient/client.h->parseRequest->line:26=[开始解析数据]
+[libprotobuf FATAL /usr/local/include/google/protobuf/repeated_field.h:1761] CHECK failed: (index) < (current_size_): 
+terminate called after throwing an instance of 'google::protobuf::FatalException'
+  what():  CHECK failed: (index) < (current_size_): 
+按 <RETURN> 来关闭窗口...
+
+可以看到只打印出了登录操作
+而第一次的登录会
+threadID:140223960286976DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+登陆操作
+threadID:140223960286976DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:31]
+threadID:140223960286976DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+threadID:140223960286976DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：22的读事件响应完成]
+threadID:140223960286976DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+uid: 1 密码: "1234"
+threadID:140224707110848DEBUG:../qtClient/client.h->packageMsg->line:35=[requestHandle开始回复数据]
+threadID:140224707110848DEBUG:src/NetConnection.cpp->sendMsg->line:92=[正在执行SendMsg]
+threadID:140224707110848DEBUG:src/NetConnection.cpp->sendMsg->line:101=[本次发送数据，是否激活写事件：1]
+threadID:140224707110848DEBUG:src/NetConnection.cpp->sendMsg->line:120=[当前的数据为:1,8]
+上面的56线程可以确定是Tcp的，但是后面竟然又收到了lb服务器给udp的一个包（而且同样是返回的基础服务器的包），崩溃了，这个包不应该有的，而且第一次的返回地址，长度为20，而这次返回的只有4，问题显然是lb服务器那里的
+想重新登录一下，只登录一个人然后重新登没问题，两个人同时登，然后不进行任何操作，直接退出登录，不崩溃
+真的神奇，想重新复现一下，结果都正常了，（反复登录可能会出现组列表加载不出来的问题）（baseServer也不太稳定，会出现段错误，如果反复登录）这里就先不管了
+
+
+19、这里记录一下聊天记录怎么左右展示图像和内容以及超长文本展示的设计
+一开始是使用item本身的图像和文字的左右对齐方式，但是这样的话图片始终在其中一侧，即如果在左侧，所有的item都在左侧，如果在右侧，都在右侧（https://blog.csdn.net/amxld/article/details/111932627和https://blog.csdn.net/tieshuxianrezhang/article/details/79191613），后面就开始问chatGPT，然后就有下面了
+首先是左右展示的问题，一开始问的chatGPT，setItemWidget，然后一晚上都无法理解怎么显示的，然后看了很多博客，chatGPT说的是有数据模型和视图模型，数据模型负责存储，视图模型负责展示渲染，但是我看网上包括chatGPT给的都是第二个选项本身就带有数据，而且没有item和widget的交互，我理解的是widget仅仅是和item关联起来了，也就是给这个item额外加了一个窗口，然后怎么显示你自己设计，我显示这个item的时候把这个显示出来就可以了，如果进行交互，也是可以的，就是自己设计事件的触发进行自己的窗口和item关联起来，不过需要注意的是执行setItemWidget之前需要先add，再setItemWidget（https://blog.csdn.net/a1317338022/article/details/105146250）
+这是设计时参考的几篇如何setItemWidget，的文章：
+https://juejin.cn/post/7085512433120313374（这篇文章进行了按钮的交互）https://www.yisu.com/zixun/399488.html（这个设计的比较复杂，并且自定义窗口是自己的数据）https://blog.csdn.net/liunanya/article/details/108267142（这是这个函数使用的注意事项） https://segmentfault.com/q/1010000006467047（也参考了这个回答），https://www.cnblogs.com/jhcelue/p/7337283.html（这个设计的是一个图片框编辑）https://blog.csdn.net/fsfsfsdfsdfdr/article/details/84036584（这个是展示的自己的按钮）https://blog.csdn.net/hellokandy/article/details/114359541（我按照这个进行了中的案例运行了一下想看看效果，因为他这个不光自己的窗口中有数据，item中也有数据，这个文件的路径是在这个日志也就是对应的client路径下面）
+上面的理解了之后剩下的其实就是如何用代码布局一个自己想要的窗口出来
+下面是布局的过程
+首先了解到qlabel能够显示文字和图片（https://blog.csdn.net/qq_45652092/article/details/111183979）这是常用的手段
+然后在释放内存的时候，想到了对象树（然后在删除的时候，获取到这个item的widget之后，直接delete掉这个widget就完全可以了）
+在设计布局的时候参考了：https://blog.csdn.net/liang19890820/article/details/51537246（怎么布局5个button）https://www.thinbug.com/q/42100394#google_vignette（这个是怎么左右对齐），这个是size策略的详细解释（https://blog.csdn.net/liang19890820/article/details/51986284）（https://www.cnblogs.com/powercool/p/14456974.html，这个设计了比较复杂的界面）
+首先是确实左右显示了，但是就是文字和图标一直各占一半，设置图标为固定大小尺寸，然后文字的qlabel为侵略，但是就是侵略不了，查了好久（然后想到搜索如何设置布局不均匀，看到https://blog.csdn.net/qq_31672941/article/details/88787501和https://blog.csdn.net/xiaodingqq/article/details/79001929，然后突然意识到addwidget的第二个参数stretch），然后看到这个文章https://blog.csdn.net/yq327115059/article/details/115820141，最后意识到我的0肯定没有反应还是默认的尺寸，即使你有侵略属性。。。。。然后设置为1之后果然正常了
+然后对头像又进行了登录一次一直是一个图像的设计，注意每个item必须有一个独立的头像，不要企图只保留一份图像，然后所有的item都使用这一个实例，这只会有一个item获得
+然后中间还有一次问题就是 文字并不是靠边显示，然后意识到虽然设计了label靠右显示，但是这个是没啥卵用的（因为我有伸缩策略了），应该设计的是msgLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+然后又进行了优化，因为上面虽然短消息可以，但是长消息还是会一行，然后窗口就显示不完全，然后就想到自动换行，加了一句  msgLabel->setWordWrap(true); （https://blog.csdn.net/lion_cxq/article/details/125754080，但其实这有一个问题就是连续的数字或者英文字母，会被当成一个单词，仍然会出现上述问题，不过这是及特殊情况，暂时不考虑），能换行是能换行了，但是还是会将宽度伸展的超过窗口，导致显示不完全，然后就想到设置宽度
+ msgLabel->setMaximumWidth(ui->chatHistory->width());  //设置最大尺寸
+但是这个最大尺寸，虽然展示的很舒服，但是他竟然只扩充到一半就换行了，显然也不符合我的预期，这到底是为啥呢，然后我打印关于ui->chatHistory的尺寸信息，发现问题了：
+ui->chatHistory->width() 232
+ui->chatHistory->size() QSize(232, 256)
+ui->chatHistory->geometry() QRect(9,45 232x256)
+ui->chatHistory->frameSize () QSize(232, 256)
+ui->chatHistory->sizeHint() QSize(256, 192)
+但是我在ui窗口看到的宽度是我用画图工具量的窗口大小尺寸是340左右，然后我在ui窗口看了一下灰色的geometry发现果然是232x256，至于为啥（https://blog.csdn.net/qq_40732350/article/details/86703749，实际大小不仅仅是上面那些debug决定的）显示的时候是340多宽度，就是括号里解释的，所以你设置宽度为ui->chatHistory->width()肯定是不对的，那怎么获取实际宽度呢，但是在设计ui的时候确实是231就已经到边上了，也就是实际就是231，这就很神奇，但是用画图工具就是370左右的宽度，很神奇，然后我就把他设计死了就是340左右，这个具体原因不太清楚
+但是又碰到一个问题，就是输入不短不长的文字，按理来说是要一行足够的，但是他偏偏是两行，然后我怎么设置伸展策略都不行，都是两行，然后我就打印出了推荐的msgLabel的sizeHint，发现是120，20，然后我量了一下页面的，果然文本框也差不多是120左右，所以需要给msgLabel设置 sizeHInt，但是这个属性被写死了，不能修改。。。。。。（https://www.51c51.com/baike/49dd9040e9ce46f0dae3c27efb0fe812.html），然后重新设置大小也不行，所以只能换个部件了，不能换部件。。。。其他的部件不能自动换行，能。。。。。，搜索了一下帮助文档的自动换行，发现textEdit以及其他的是可以的（，然后我在网上收到了一个聊天狂设计的，折叠modehttps://cloud.tencent.com/developer/article/2076495），决定换成QTextOption::WrapAtWordBoundaryOrAnywhere。不行，换成那个会导致会侵占所有的窗口，而且不能设置sizeHInt
+然后最终采取了一种折中的方案
+又换成了qlabel，并且设置了固定宽度。。。。水平方向忽略sizeHInt，还是会在一半左右换行输出。。。。，所以就只能采取硬手段
+ //因为不能设置sizeHine，而且我又不想文字比较短的时候文本框那么长，就采取了这种折中的方案
+            //，我量了一下，一个字的宽度为20，而且我还设置了固定尺寸的聊天框，所以不会错的
+            int expectWidth = curTargetRecords.records[i].data.size() * 20;  //20为一个字的宽度
+            int maxWidth = ui->chatHistory->width() - 45;  //45是实际测的，刚好的宽度
+            if(expectWidth <= maxWidth){
+                msgLabel->setFixedWidth(expectWidth);  //设置最佳尺寸
+            }else{
+                msgLabel->setFixedWidth(maxWidth);
+            }
+但是还是发现不行，因为英文字母和数字不一样的宽度，所以最终改成这样：
+
+ //创建一个视图模型
+            QWidget* window = new QWidget;
+            //创建一个布局，并将消息设置到布局上
+            QHBoxLayout* layout = new QHBoxLayout(window);  //父对象
+            //创建一个头像label
+            QLabel* headLabel = new QLabel(window);//父对象
+            //设置头像的伸展策略
+            headLabel->setFixedSize(20,20);         //设置头像尺寸
+            headLabel->setSizePolicy(QSizePolicy(QSizePolicy::Fixed,QSizePolicy::Fixed, QSizePolicy::Label));
+             //创建一个文本消息label
+            QLabel* msgLabel = new QLabel(curTargetRecords.records[i].data, window); //父对象
+            window->setSizePolicy(QSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum));
+
+            //int width = ui->chatHistory->width() - 50;
+            //msgLabel->setFixedSize(width, 20);
+            msgLabel->setWordWrap(true);  //设置文本自动换行，否则不管多少字一直是一行，再配合上面的侵略策略即可实现超常文本的展示
+            //因为不能设置sizeHine，而且我又不想文字比较短的时候文本框那么长，就采取了这种折中的方案
+            //，我量了一下，一个字的宽度为20，而且我还设置了固定尺寸的聊天框，所以不会错的
+            double expectWidth = 0;  //20为一个字的宽度
+            QString data = curTargetRecords.records[i].data;
+            for(int i = 0; i < data.size(); i++){
+                ushort uni = data[i].unicode();
+                if(uni >= 0x4E00 && uni <= 0x9FA5)
+                {
+                    expectWidth += 15.5;
+                }else{
+                    expectWidth += 8;
+                }
+            }
+            int maxWidth = ui->chatHistory->width() - 50;  //45是实际测的，刚好的宽度
+            if(expectWidth < maxWidth){
+                msgLabel->setMinimumWidth(expectWidth);  //设置最佳尺寸
+            }else{
+                msgLabel->setFixedWidth(maxWidth);
+            }
+            msgLabel->setSizePolicy(QSizePolicy(QSizePolicy::Ignored, QSizePolicy::Minimum, QSizePolicy::Label));
+            if(curTargetRecords.records[i].fromId == m_client->m_user.uid){
+                msgLabel->setStyleSheet("background-color: rgb(26,173,25);");
+                headLabel->setPixmap(m_client->m_user.iconPath);
+                layout->addWidget(msgLabel, 1, Qt::AlignRight);   //一定要把拉神因子设为大于0的呀，否则根本不会侵略其他的空间。。。。
+                msgLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+                layout->addWidget(headLabel, 0, Qt::AlignRight);
+            }else{
+               friend_ from(curTargetRecords.records[i].fromId);
+               int targetFriendIndex = m_client->m_user.friendList.indexOf(from);
+               headLabel->setPixmap(m_client->m_user.friendList[targetFriendIndex].iconPath);
+               layout->addWidget(headLabel, 0, Qt::AlignLeft);
+               msgLabel->setStyleSheet("background-color: rgb(241,241,241);");
+               msgLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+               layout->addWidget(msgLabel, 1, Qt::AlignLeft);
+            }
+            //设置视图模型的布局
+            window->setLayout(layout);
+            //创建一个项，将当前项和布局进行关联
+            QListWidgetItem* item = new QListWidgetItem();
+            item->setSizeHint(layout->sizeHint());
+            ui->chatHistory->addItem(item);  //将当前项添加到widget中
+            ui->chatHistory->setItemWidget(item, window);  //将当前项添加到widget中
+，虽然这个某些特殊情况下也会有问题，但是大部分情况已经可以了，注意 if(expectWidth < maxWidth){
+                msgLabel->setMinimumWidth(expectWidth);  //设置最佳尺寸
+这里设置的时最小尺寸，因为目的是为了让系统自适应文字边框宽度，避免边太宽，判断是否为中文的参考了https://blog.csdn.net/zxl_1996/article/details/79303850
+
+
+20、第一次登录之后都很正常，第二次登录就没反应了，然后看lb服务器发现死锁了。。。
+threadID:140134803629824DEBUG:src/LbAgent.cpp->requestHandle->line:72=[requestHandle开始执行]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:382=[群聊转发正在执行]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:391=[在线群组1成员信息：]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:393=[uid：1，姓名：小李]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:393=[uid：2，姓名：Tony]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:398=[i目标服务器个数：0]
+正在执行ServerAddr拷贝构造函数
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:405=[uid：1，姓名：小李所在的主机：[127.0.0.1:10011]]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:418=[targetMsgList的大小：]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:433=[if结尾目标服务器个数：1]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:398=[i目标服务器个数：1]
+无参构造ServerAddr
+正在执行ServerAddr拷贝构造函数
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:405=[uid：2，姓名：Tony所在的主机：[:2]]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:418=[targetMsgList的大小：]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:433=[if结尾目标服务器个数：2]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:445=[目标服务器个数：2]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:449=[需要server[ip:0.0.0.0, port:0]帮助转发消息]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:450=[对应的udp网络地址为：server[ip:0, port:0]]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:145=[正在执行SendMsg]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:146=[sendMsg：当前要发送的地址信息（网络地址）：ip：0, port:0]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:183=[sendMsg正在加锁]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:210=[当前的数据为:5,45"我喜欢i是第三届开速度快 *]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:211=[m_wbuffer->getReadSize():0]
+threadID:140134803629824DEBUG:src/Buffer.cpp->writeToBuffer->line:117=[writeToBuffer1加锁]
+threadID:140134803629824DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+threadID:140134803629824DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8164,需要扩容的大小：4]
+threadID:140134803629824DEBUG:src/Buffer.cpp->resizeBuffer->line:95=[resizeBuffer解锁]
+threadID:140134803629824DEBUG:src/Buffer.cpp->writeToBuffer->line:121=[writeToBuffer1解锁]
+threadID:140134803629824DEBUG:src/Buffer.cpp->writeToBuffer->line:117=[writeToBuffer1加锁]
+threadID:140134803629824DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+threadID:140134803629824DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8160,需要扩容的大小：4]
+threadID:140134803629824DEBUG:src/Buffer.cpp->resizeBuffer->line:95=[resizeBuffer解锁]
+threadID:140134803629824DEBUG:src/Buffer.cpp->writeToBuffer->line:121=[writeToBuffer1解锁]
+threadID:140134803629824DEBUG:src/Buffer.cpp->writeToBuffer->line:117=[writeToBuffer1加锁]
+threadID:140134803629824DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+threadID:140134803629824DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：8156,需要扩容的大小：45]
+threadID:140134803629824DEBUG:src/Buffer.cpp->resizeBuffer->line:95=[resizeBuffer解锁]
+threadID:140134803629824DEBUG:src/Buffer.cpp->writeToBuffer->line:121=[writeToBuffer1解锁]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:222=[当前即将写的写缓冲区的内存情况为：m_readPos：28，m_writePos：81，getReadSize()：53，getWriteSize()：8111，data：]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:228=[压入前当前udp地址队列情况：]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:229=[当前udp地址队列大小：0]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:237=[正在压入消息地址]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:245=[当前udp地址队列情况：]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:246=[当前udp地址队列大小：1]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:247=[队头（网络地址）：ip：0, port:0]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:248=[队尾（网络地址）：ip：0, port:0]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:249=[sendMsg正在解锁]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:254=[SendMsg正在激活写事件]
+threadID:140134803629824DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:449=[需要server[ip:127.0.0.1, port:54494]帮助转发消息]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->DealingRequest->line:450=[对应的udp网络地址为：server[ip:16777343, port:57044]]
+threadID:140134803629824DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+threadID:threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:145=[140134812022528正在执行SendMsg]
+threadID:140134803629824DEBUG:src/Udp.cpp->sendMsg->line:146=[DEBUG:src/Dispatcher.cpp->wait->line:90=[sendMsg：当前要发送的地址信息（网络地址）：ip：16777343, port:57044epoll_wait等待完成，epfd树3有1事件触发]
+threadID:140134812022528DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+threadID:140134812022528DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了]
+threadID:140134812022528DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有1个任务]
+threadID:140134812022528DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+threadID:140134812022528DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:6]
+threadID:140134812022528DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+threadID:140134812022528DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：4的读事件响应完成]
+threadID:140134812022528DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+threadID:140134812022528DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树3有1事件触发]
+threadID:140134812022528DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+threadID:140134812022528DEBUG:src/Udp.cpp->processWrite->line:82=[processWrite正在加锁]
+threadID:140134812022528DEBUG:src/Udp.cpp->processWrite->line:87=[开始组织数据并响应，预响应的消息为：，包大小为：53]
+threadID:140134812022528DEBUG:src/Udp.cpp->processWrite->line:101=[processWrite：当前要发送的地址信息：ip：0.0.0.0, port:0]
+threadID:140134812022528DEBUG:src/Buffer.cpp->writeBufferToSocket->line:460=[正在发消息给：0.0.0.0:0]
+threadID:140134812022528DEBUG:src/Buffer.cpp->writeBufferToSocket->line:462=[writeBufferToSocket2加锁]
+]
+sendto: Invalid argument
+threadID:140134812022528DEBUG:src/Udp.cpp->processWrite->line:121=[本次发送的字节大小为：0]
+threadID:140134812022528DEBUG:src/Udp.cpp->processWrite->line:87=[开始组织数据并响应，预响应的消息为：，包大小为：53]
+threadID:140134812022528DEBUG:src/Udp.cpp->processWrite->line:101=[processWrite：当前要发送的地址信息：ip：0.0.0.0, port:0]
+threadID:140134812022528DEBUG:src/Buffer.cpp->writeBufferToSocket->line:460=[正在发消息给：0.0.0.0:0]
+可以看到第一次登录在群里转发的消息的目的地址有问题，发现是mysql的状态不一致，导致查找的是0000，然后一发送失败就死锁了，可以改一下mysql的其他成员的状态，后续可以对目的地址做个检查
+21、登录时收不到最后一个列表的情况越来越多了，不过后面也没遇到了，这个先不管了
+
+22、遇到群聊发消息对方收不到，然后打印日志发现lb服务器发送在线请求，但是一直收不到消息（连定时更新的都收不到了。。。。只能发送），猜测大概率时mysql服务器写事件没有被激活了
+threadID:140038042703616DEBUG:src/Message.cpp->getRequest->line:106=[解析到的数据为 前往厄齐 111jjj 柔90 大小为：20]
+threadID:140038042703616DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：28，读缓冲区的写指针为：28]
+threadID:140038042703616DEBUG:src/Message.cpp->analyze->line:49=[当前数据解析成功,msgid：4，msglen：20，m_data 前往厄齐 111jjj 柔90 ]
+threadID:140038042703616DEBUG:src/Message.cpp->analyze->line:50=[Response,读缓冲区的读指针为：28，读缓冲区的写指针为：28]
+threadID:140038042703616DEBUG:src/MsgRouter.cpp->call->line:61=[当前业务序号：4]
+threadID:140038042703616DEBUG:src/MsgRouter.cpp->call->line:69=[Udp的地址：158ff80]
+threadID:140038042703616DEBUG:src/MsgRouter.cpp->call->line:70=[userData的地址：0]
+threadID:140038042703616DEBUG:src/LbAgent.cpp->requestHandle->line:72=[requestHandle开始执行]
+threadID:140038042703616DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+threadID:140038042703616DEBUG:src/NetConnection.cpp->sendMsg->line:92=[正在执行SendMsg]
+threadID:140038042703616DEBUG:src/NetConnection.cpp->sendMsg->line:101=[本次发送数据，是否激活写事件：1]
+threadID:140038042703616DEBUG:src/NetConnection.cpp->sendMsg->line:120=[当前的数据为:23,13]
+threadID:140038042703616DEBUG:src/NetConnection.cpp->sendMsg->line:121=[m_wbuffer->getReadSize():0]
+threadID:140038042703616DEBUG:src/Buffer.cpp->writeToBuffer->line:117=[writeToBuffer1加锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：10,需要扩容的大小：4]
+threadID:140038042703616DEBUG:src/Buffer.cpp->resizeBuffer->line:95=[resizeBuffer解锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->writeToBuffer->line:121=[writeToBuffer1解锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->writeToBuffer->line:117=[writeToBuffer1加锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：6,需要扩容的大小：4]
+threadID:140038042703616DEBUG:src/Buffer.cpp->resizeBuffer->line:95=[resizeBuffer解锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->writeToBuffer->line:121=[writeToBuffer1解锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->writeToBuffer->line:117=[writeToBuffer1加锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->resizeBuffer->line:60=[扩充Buf大小，将未读区域移动到开头的位置]
+threadID:140038042703616DEBUG:src/Buffer.cpp->resizeBuffer->line:95=[resizeBuffer解锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->writeToBuffer->line:121=[writeToBuffer1解锁]
+threadID:140038042703616DEBUG:src/NetConnection.cpp->sendMsg->line:135=[当前即将写的写缓冲区的内存情况为：m_readPos：0，m_writePos：21，getReadSize()：21，getWriteSize()：9，data：]
+threadID:140038042703616DEBUG:src/NetConnection.cpp->sendMsg->line:141=[SendMsg正在激活写事件]
+threadID:140038042703616DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+threadID:140038042703616DEBUG:src/MsgRouter.cpp->call->line:72=[调用业务回调函数成功]
+threadID:140038042703616DEBUG:src/Message.cpp->analyze->line:55=[request状态已修改为 HandleState::MsgHead]
+threadID:140038042703616DEBUG:src/Udp.cpp->processRead->line:58=[读事件是否开启；1]
+threadID:140038042703616DEBUG:src/Buffer.cpp->readSocketToBuffer->line:357=[当前Buf的情况为：，当前读指针：28，当前写指针：28]
+threadID:140038042703616DEBUG:src/Buffer.cpp->readSocketToBuffer->line:359=[readSocketToBuffer2加锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->resizeBuffer->line:60=[扩充Buf大小，将未读区域移动到开头的位置]
+threadID:140038042703616DEBUG:src/Buffer.cpp->resizeBuffer->line:95=[resizeBuffer解锁]
+当前不可读
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树7有1事件触发]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+read: Resource temporarily unavailable
+threadID:140038034310912DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有1个任务]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：1， fd:10]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：8的读事件响应完成]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树7有1事件触发]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+threadID:140038034310912DEBUG:src/NetConnection.cpp->processWrite->line:57=[开始组织数据并响应，预响应的消息为：]
+threadID:140038034310912DEBUG:src/Buffer.cpp->writeBufferToSocket->line:417=[writeBufferToSocket加锁]
+threadID:140038042703616DEBUG:src/Buffer.cpp->readSocketToBuffer->line:387=[readSocketToBuffer2解锁]
+threadID:140038042703616DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：6的读事件响应完成]
+threadID:140038042703616DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+threadID:140038034310912DEBUG:src/Buffer.cpp->writeBufferToSocket->line:435=[writeBufferToSocket解锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->writeBufferToSocket->line:438=[本次写到socket的字节数为：21]
+threadID:140038034310912DEBUG:src/NetConnection.cpp->processWrite->line:79=[本次发送的字节大小为：21]
+threadID:140038034310912DEBUG:src/NetConnection.cpp->processWrite->line:83=[正在关闭写事件]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：10的写事件响应完成]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树7有2事件触发]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+threadID:140038034310912DEBUG:src/NetConnection.cpp->processWrite->line:57=[开始组织数据并响应，预响应的消息为：]
+threadID:140038034310912DEBUG:src/NetConnection.cpp->processWrite->line:79=[本次发送的字节大小为：0]
+threadID:140038034310912DEBUG:src/NetConnection.cpp->processWrite->line:83=[正在关闭写事件]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->addTask->line:86=[正在唤醒子线程]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->activeEventProcess->line:68=[fd：10的写事件响应完成]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第1件事情]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->readMyData->line:103=[已被唤醒,主线程说：该起来干活了该起来干活了]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->tasksProcess->line:109=[正在处理任务,当前一共有2个任务]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:10]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->epollCtl->line:33=[正在给channel添加读事件]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->epollCtl->line:47=[epoll成功修改写事件：0， fd:10]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->tasksProcess->line:153=[任务处理成功]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：8的读事件响应完成]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树7有1事件触发]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+threadID:140038034310912DEBUG:src/NetConnection.cpp->processRead->line:21=[正在读fd：10发来的消息并解析]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:311=[readSocketToBuffer加锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:320=[本次读到socket的数据大小为：34,当前Buf的情况为：7.0.0.10.1
+
+                                                                                                                                                127.0.0.1读指针：0，当前写指针：5390]
+threadID:140038034310912DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->resizeBuffer->line:54=[当前大小：152,需要扩容的大小：34]
+threadID:140038034310912DEBUG:src/Buffer.cpp->resizeBuffer->line:95=[resizeBuffer解锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:322=[尝试性扩容后（只是调用扩容接口）当前Buf的情况为：7.0.0.10.1
+
+                                                                                                                                                127.0.0.1
+
+          threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:324=[readSocketToBuffer解锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:330=[读数据完成，读到的字节数为：34]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：10的读事件响应完成]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+threadID:140038025918208DEBUG:src/LbAgent.cpp->planUpdateRouter->line:107=[正在请求第一张表]
+这是lb服务器的日志，发送给mysql之后没有请求了（后面的定时更新日志直邮发送，没有接收了），下面是mysql的日志，不对发现mysql发送成功了，lb也收到了。。但是lb读完之后正常都会解析函数然后执行对应的回调函数，如下：
+:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:324=[readSocketToBuffer解锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:330=[读数据完成，读到的字节数为：42]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:164=[readFromBuffer正在执行，size：4, getReadSize:42]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:172=[readFromBuffer1加锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:187=[readFromBuffer1解锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:164=[readFromBuffer正在执行，size：4, getReadSize:38]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:172=[readFromBuffer1加锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:187=[readFromBuffer1解锁]
+threadID:140038034310912DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:2, this->m_msglen:34]
+threadID:140038034310912DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：116，读缓冲区的写指针为：150]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:233=[readFromBuffer3加锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:240=[readFromBuffer3解锁]
+这是正常的流程：但突然有一次请求mysql的路由表之后，就出现了
+          threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:324=[readSocketToBuffer解锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:330=[读数据完成，读到的字节数为：84]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：10的读事件响应完成]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+threadID:140038025918208DEBUG:src/LbAgent.cpp->planUpdateRouter->line:107=[正在请求第一张表]
+threadID:140038025918208DEBUG:src/LbAgent.cpp->packageMsg->line:492=[requestHandle开始回复数据]
+threadID:140038025918208DEBUG:src/NetConnection.cpp->sendMsg->line:92=[正在执行SendMsg]
+threadID:140038025918208DEBUG:src/NetConnection.cpp->sendMsg->line:101=[本次发送数据，是否激活写事件：1]
+threadID:140038025918208DEBUG:src/NetConnection.cpp->sendMsg->line:120=[当前的数据为:1,2]
+threadID:140038025918208DEBUG:src/NetConnection.cpp->sendMsg->line:121=[m_wbuffer->getReadSize():0]
+threadID:140038025918208DEBUG:src/Buffer.cpp->writeToBuffer->line:117=[writeToBuffer1加锁]
+threadID:140038025918208DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+threadID:140038025918208DEBUG:src/Buffer.cpp->resizeBuffer->line:60=[扩充Buf大小，将未读区域移动到开头的位置]
+threadID:140038025918208DEBUG:src/Buffer.cpp->resizeBuffer->line:95=[resizeBuffer解锁]
+threadID:140038025918208DEBUG:src/Buffer.cpp->writeToBuffer->line:121=[writeToBuffer1解锁]
+这种，就是读完之后也不分析，直接说数据处理完成
+if (ret > 0) {
+		//业务逻辑处理
+		//std::cout << "开始解析数据" << std::endl;
+		//这个while的作用是防止多个请求连续过来
+		while (m_rbuffer->getReadSize() != 0)
+		{
+			int analyzeState = m_request->analyze(this); //解析数据（业务处理，并将想要的数据放到m_response）
+			if (analyzeState == 0)break;  //如果为0 说明还需要数据，就不需要继续while了
+		}
+		
+		//为什么要有一个sendmsg函数，而且必须要有（并且激活写事件的控制权也必须要放到sendmsg）
+		// 因为考虑到主动发送机制和被动发送机制的统一性，
+		// 首先被动发送机制肯定会直接调用processRead，然后分析数据，最后根据分析出的数据，
+		// 调用sendmeg函数将响应消息放到m_wbuffer里，然后激活写事件调用processWrite
+		// 主动发送机制则是直接调用sendmeg函数将响应消息放到m_wbuffer里，然后激活写事件调用processWrite
+		// 可以看到他们后面一部分是相同的，完全可以让他们都走同一个逻辑
+		//sendMsg();//包括组织m_response数据到m_wbuffer，以及开启写事件
+		// 因为实现了消息路由机制，发送消息到wbuffer里或者说给不给对端回应（因为如果回复的消息小于等于0直接返回）的权力交给了业务函数
+		
+		//注意这里不一定处理哦，当前响应数据块没准备好，那么就直接不执行
+		//开启写事件!!!!
+		//m_wbuffer->writeToBuffer(m_rbuffer, ret); //简单的拷贝数据
+		//m_channel->writeEnable(true); //将当前的channel开启写事件，注意这个开启之后，还没更新到检测树上，还需要任务队列-》处理任务-》判断这个channel的读写事件并更新到树上
+		//m_evloop->addTask(this->m_evloop, m_channel, TaskType::MODI);
+	}
+	else {
+		//客户端断开连接
+		m_evloop->addTask(this->m_evloop, m_evloop->packageTask(m_channel, TaskType::DEL));
+	}
+看源码发现，会进入if，如果进入else肯定会打印添加任务之类的，并且，>readSocketToBuffer我看了日志返回的肯定是84，因为返回的就是totalLen，而打印的totalLen就是84，但是肯定没有进入m_rbuffer->getReadSize() != 0，也就是读缓冲区为0。。。。。
+
+然后发现：
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:90=[epoll_wait等待完成，epfd树7有1事件触发]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:92=[epoll_wait正在处理第0件事情]
+threadID:140038034310912DEBUG:src/NetConnection.cpp->processRead->line:21=[正在读fd：10发来的消息并解析]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:311=[readSocketToBuffer加锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:320=[本次读到socket的数据大小为：84,当前Buf的情况为：，当前读指针：66，当前写指针：150]
+threadID:140038034310912DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->resizeBuffer->line:60=[扩充Buf大小，将未读区域移动到开头的位置]
+threadID:140038034310912DEBUG:src/Buffer.cpp->resizeBuffer->line:95=[resizeBuffer解锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:322=[尝试性扩容后（只是调用扩容接口）当前Buf的情况为：
+
+                                                                                                                                127.0.0.10.1
+
+                                                                                                                                                127.0.0.1
+
+          threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:324=[readSocketToBuffer解锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:330=[读数据完成，读到的字节数为：84]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:164=[readFromBuffer正在执行，size：4, getReadSize:84]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:172=[readFromBuffer1加锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:187=[readFromBuffer1解锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:164=[readFromBuffer正在执行，size：4, getReadSize:80]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:172=[readFromBuffer1加锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:187=[readFromBuffer1解锁]
+threadID:140038034310912DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:236082680, this->m_msglen:842074378]
+threadID:140038034310912DEBUG:src/Message.cpp->getRequest->line:91=[MsgHead,读缓冲区的读指针为：8，读缓冲区的写指针为：84]
+threadID:140038034310912DEBUG:src/Message.cpp->getRequest->line:97=[MsgBody正在HandleState::WaitingBody， m_msglen为：842074378,getReadSize为76]
+threadID:140038034310912DEBUG:src/EventLoop.cpp->activeEventProcess->line:63=[fd：10的读事件响应完成]
+threadID:140038034310912DEBUG:src/Dispatcher.cpp->wait->line:79=[epoll_wait开始等待]
+上次读完之后[this->m_msgid:236082680, this->m_msglen:842074378]，这个msgId和msglen肯定是不对的，这应该是mysql的问题了，但是发现mysql打印的id和长度都是正确的，然后发现这个出问题的日志发的日志，发现就是两个1一起发过来的响应列表（一个42两个就是84）就有问题了，但是发现写的内存正常（mysql端回复的这84个数字每个包的id和len都打印出来了，id和len都是2，34，所以肯定是客户端接收出错了，并且mysql发送数据之前，缓冲区是空的[m_wbuffer->getReadSize():0，所以才会激活写事件，但是lb服务器上次的已经读取完全了，读写指针都是66，解析到的数据为 
+小李
+
+                127.0.0.1大小为：16]
+threadID:140038034310912DEBUG:src/Message.cpp->getRequest->line:107=[MsgBody,读缓冲区的读指针为：66，读缓冲区的写指针为：66]
+threadID:140038034310912DEBUG:src/Message.cpp->analyze->line:29=[当前数据解析成功,msgid：24，msglen：16，m_data 
+小李
+
+                127.0.0.1]
+threadID:140038034310912DEBUG:src/Message.cpp->analyze->line:30=[Response,读缓冲区的读指针为：66，读缓冲区的写指针为：66]
+threadID:140038034310912DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：24]，
+
+然后之后解析id和len很大的是紧接着读的
+本次读到socket的数据大小为：84,当前Buf的情况为：，当前读指针：66，当前写指针：150]
+threadID:140038034310912DEBUG:src/Buffer.cpp->resizeBuffer->line:52=[resizeBuffer加锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->resizeBuffer->line:60=[扩充Buf大小，将未读区域移动到开头的位置]
+threadID:140038034310912DEBUG:src/Buffer.cpp->resizeBuffer->line:95=[resizeBuffer解锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:322=[尝试性扩容后（只是调用扩容接口）当前Buf的情况为：
+
+                                                                                                                                127.0.0.10.1
+
+                                                                                                                                                127.0.0.1
+
+          threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:324=[readSocketToBuffer解锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readSocketToBuffer->line:330=[读数据完成，读到的字节数为：84]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:164=[readFromBuffer正在执行，size：4, getReadSize:84]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:172=[readFromBuffer1加锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:187=[readFromBuffer1解锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:164=[readFromBuffer正在执行，size：4, getReadSize:80]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:172=[readFromBuffer1加锁]
+threadID:140038034310912DEBUG:src/Buffer.cpp->readFromBuffer->line:187=[readFromBuffer1解锁]
+threadID:140038034310912DEBUG:src/Message.cpp->getRequest->line:90=[this->m_msgid:236082680, this->m_msglen:842074378]
+，真的很奇怪，发出去的正常，发送时发送地址为空，读的时候地址也是接着的，但是就是读失败），很诡异的现象，后面有精力再处理，完整的交互逻辑日志存到client对应的日志下面了

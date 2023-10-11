@@ -1,0 +1,126 @@
+syntax="proto3";
+
+//因为这个文件必须要用到user的结构体，所以必须要嵌套的使用proto协议，而在自己的cpp文件里面，则可以不用引入user相关头文件文件
+//导入不允许使用相对路径，必须要使用绝对路径，参考：https://www.jianshu.com/p/a0286b58098e
+//这个也可以https://www.cnblogs.com/hsnblog/p/9615742.html
+//科普性：https://www.cnblogs.com/ghj1976/p/5435565.html和https://blog.csdn.net/think2me/article/details/115621471
+//import "protobuf/common/user.proto";   //这样写，编译时这样写：protoc -I=../../ -I =./  --cpp_out=./ ./*.proto   这时h包含的文件时#include "protobuf/common/user.proto"
+//第一个指定了import "test.proto"中test.proto文件的搜索目录，第二个定义了要编译的文件protoDemo2.proto文件的目录。
+import "user.proto";   //这样写，，编译时这样写，protoc -I=../common -I =./  --cpp_out=./ ./*.proto  这时h包含的文件时#include "user.pb.h"
+//注意，不管是咋写，一定要让cpp文件知道对应的user.h文件所在位置
+//还有其他写法，可以看最后两个链接，写法很多，主要就是找到对应的文件
+
+package baseService;
+
+/*router系统消息ID定义*/
+enum MessageID{
+	ID_UNKNOW = 0; //prot3的enum第一个属性必须为0，用来占位
+	ID_LoginRequest = 1;  //登录请求消息体
+	ID_LoginResponse = 2;  //登录请求响应
+	ID_SendMsgRequest = 3;  //消息发送请求
+	ID_SendMsgResponse = 4;  //消息发送响应
+	//下面两个主要针对流媒体的聊天室
+	ID_UserEnter = 5;  //服务器通知客户端某个用户进入聊天室
+	ID_UserLeave = 6;  //服务器通知客户端某个用户离开聊天室
+	ID_MsgNotify = 7;  //消息转发通知，某个客户发了一条消息，服务器需要把这个消息转发给指定的客户端
+	//注册业务不应该放在这，因为注册代表着还没有uid，那么负载均衡服务器怎么分配服务器（因为uid要索引）
+	//登录可以（因为客户端输入一个用户id和密码的时候，先将uid发到负载均衡服务器，等他返回一个ip，然后连接，然后登录）
+	//注册的话如果硬要放在这也可以，就是用户在注册的时候，根据用户名和密码生成一个随机uid，作为临时的id，发给负载均衡服务器，然后返回ip之后，
+	//客户端连接并发送注册业务，这个时候注册业务的服务器应该把这个结果不光通知客户端，还要通知给负载服务器
+	//登录的话也是一样，当服务器登录处理完登录业务之后，应该通知客户端和负载均衡服务器
+	ID_RegisterRequest = 8;  //用户注册请求
+	ID_RegisterResponse = 9;  //用户注册响应
+	ID_AddRelationsRequest = 10;      //用户添加操作 （添加用户或者群）
+	ID_AddRelationsResponse = 11;      //用户添加操作 （添加用户或者群）
+	ID_LogoutRequest = 12;   //这个不需要再响应给客户端
+	ID_AddFavoriteRequest = 13;  //添加喜欢请求
+	ID_AddFavoriteResponse = 14; //添加喜欢响应
+}
+
+//登录请求
+message LoginRequest{
+	int32 uid = 1;
+	string passwd = 2;
+}
+
+//登录请求响应
+//在写baseServer登录反馈的时候，决定修改这里的协议
+message LoginResponse{
+	int32 uid = 1;
+	//int32 result = 2;
+	oneof loginResult{
+		int32 result = 2;
+		user.GetUserFavoriteResponse favoriteList = 3;
+		user.GetFriendsResponse friendList = 4;
+		user.GetUserGroupsResponse groupList = 5;
+	}
+}
+
+//发送消息请求
+message SendMsgRequest{
+	int32 modid = 1;  //需要带上编号，到底是群发还是单发，1是私聊，2是群发
+	string msg = 2;  
+	int32 toId = 3; //如果是群发，就是群id，如果是单发就是uid
+}
+
+//发送消息响应
+message SendMsgResponse{
+	int32 fromId = 1;  //这个响应是谁（哪个朋友）的响应（再写客户端的时候,进行页面切换的时候需要有这个）
+	int32 result = 2;   //响应结果 //1代表响应成功，-1代表响应失败
+}
+
+//注册请求
+message RegisterRequest{
+	int32 modid = 1;    //请求类型 //1代表请求注册用户，2代表请求注册群组
+	int32 id = 2;     //注册用户时提供的随机账号
+	string name = 3; //群或者用户名称
+	string passwd = 4;  //如果是用户需要提供这个选项
+	string summary = 5;   //个人简介或者群简介，不过暂时只支持群简介
+}
+
+//注册响应
+message RegisterResponse{
+	int32 modid = 1;    //和请求的id要一样 
+	int32 result = 2;   // 响应结果
+	int32 id = 3;       //返回的群号或者id号
+}
+
+
+//添加请求
+message AddRelationsRequest{
+	int32 modid = 1;    //添加类型，群或者用户
+	int32 id = 2; //用户id或者群id
+}
+
+//添加响应
+message AddRelationsResponse{
+	int32 modid = 1;    //和请求的类型要一样 
+	int32 result = 2;   // 响应结果
+	int32 id = 3;       //返回的群号或者id号
+}
+
+//转发消息格式，这个是服务器收到负载均衡服务器的转发命令之后，按照这个格式转发给对应的客户端
+//这个只能转发给客户端，如果转发给服务器应该使用服务器的协议
+//而且这个服务本质上是负载均衡服务器提供的，所以需要在那里进行协议的添加
+message MsgNotify{  //	ID_MsgNotify = 7
+	int32 modid = 1;	//标注是1代表是1对1聊天，如果是2代表是群聊消息
+	int32 fromId = 2;   //源客户id  
+	string msg = 3;   //客户消息
+	int32 toId = 4; //目的客户地址 （可能是群组也可能是某个用户）msgNotify的toid如果是群发，那么存的是gid，如果是私聊，存的是目标uid（私发不存也没啥，因为已经发到客户端了）
+}
+
+//下线通知
+message LogoutRequest{
+	int32 uid = 1;
+}
+
+//喜欢请求
+message AddFavoriteRequest{
+	int32 fid = 1;
+}
+
+message AddFavoriteResponse{
+	int32 uid = 1;
+	int32 fid = 2;
+	int32 result = 3;
+}

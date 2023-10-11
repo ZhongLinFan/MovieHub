@@ -1,0 +1,86 @@
+syntax="proto3";
+
+package lbService;
+
+/*系统消息ID定义*/
+enum MessageID{
+	ID_UNKNOW = 0; //prot3的enum第一个属性必须为0，用来占位
+	ID_GetServerRequest = 1;  //获得一个基础服务器的请求
+	ID_GetServerResponse = 2; //返回请求给客户端（流媒体或者基础服务器）
+	ID_ServerResonseToLb = 3; //服务器返回请求给lb
+	ID_RepostMsgRequest = 4;   //服务器转发过来的消息，负载均衡服务器这里查寻到对应的客户端，然后把消息发到对应的服务器上
+	ID_RepostMsgResponseTo = 5;   //负载均衡服务器给目的服务器发的响应消息格式
+	ID_RepostMsgResponseFrom = 6;   //负载均衡服务器给源服务器发的响应消息格式，告诉服务器有没有消息有没有转发成功
+	ID_StopServiceRequest = 7;  //基础服务器不再为该用户提供服务的请求（比如退出，服务异常，违规等等	）
+}
+
+//定义返回的消息基类型
+message HostInfo{
+	string ip = 1;   //注意这里都是主机字节序
+	int32 port = 2; //注意这里都是主机字节序
+}
+
+//不需要标明当前用户id是否存在，客户端获取服务器之后，会直接触发登录操作，
+//然后进行登录验证，登录完，服务器需要向负载均衡服务器的结果，如果登录成功，代表当前用户合法，如果登录不成功
+//那么直接删掉对应的uid
+message GetServerRequest{
+	int32 modid = 1;
+	int32 uid = 2;  //在写分配流媒体服务器的时候，发现需要uid，所以这里增加一个uid的项
+	int32 fid = 3;    //fid
+}
+
+//返回的消息类型
+//负载均衡服务器回复给客户端的消息
+//1代表基础服务器（包括聊天服务器）
+//2代表流媒体服务器
+message GetServerResponse{
+	int32 modid = 1;
+	int32 uid = 2;   //服务器地址是给谁的
+	repeated HostInfo host = 3;
+}
+
+//服务器返回给负载均衡服务器的该用户的登录或者注册状态，如果登录或者注册成功,我就同步到在线map中，如果失败也要告诉给lb服务器
+//也就是lb服务器在收到GetServerRequest的消息后，需要指定的服务器返回一个消息，告诉我到底有没有登录或者注册成功
+message ServerResonseToLb{
+	//客户端信息
+	int32 modid = 1; //当前是流媒体的响应还是基础服务器的响应，1代表基础服务器，2代表流媒体
+	int32 originId = 2;  //如果客户端是登录业务，那么就去数据库核对，正常返回结果给lb服务器，如果是注册业务，那么服务器应该返回给lb服务器一个正确的id
+	int32 finalId = 3;   //最终的一个id
+	//客户端登录结果
+	int32 result = 4; //如果提供服务则成功，为1，如果失败为-1
+}
+
+//客户端通过这次请求，是失败还是成功，反馈给负载均衡服务器
+message Repoter{
+	//string requestSql = 1; 
+	bool result = 1;    //要查询的服务器类型(比如1代表流媒体，2代表聊天服务器)
+	HostInfo client = 2;  //请求的资源
+}
+
+message RepostMsgRequest{  //ID_repostMsgRequest = 4;
+	int32 modid = 1;	//标注是1代表是1对1聊天，如果是2代表是群聊消息
+	int32 fromId = 2;   //源客户id  
+	string msg = 3;   //客户消息
+	int32 toId = 4; //目的客户地址 （可能是群组也可能是某个用户）
+}
+
+//注意这里负载均衡服务器在接到一个请求之后，可能会发多个包给多台服务器
+message RepostMsgResponseTo{  //ID_repostMsgRequest = 4;
+	int32 modid = 1;	//标注是1代表是1对1聊天，这个时候下面应该只有一个toId，如果是2代表是群聊消息，如果是3，代表是1个消息被同时发给多人
+	int32 fromId = 2;   //源客户id  
+	repeated string msg = 3;   //客户消息 （当前是udp如果多个消息都很大的话，会出现问题，如果改成tcp通信问题不大）
+	int32 gid = 4;   //如果是模式2，这个id不能为空（如果不赋值，或者为0 将会不处理）
+	repeated int32 toId = 5; //目的客户地址
+}
+
+//注意应该回复消息给服务器，也就是一个RepostMsgRequest请求对应两个响应
+message RepostMsgResponseFrom{  //ID_repostMsgRequest = 4;
+	int32 fromId = 1;   //在写客户端的时候需要知道有没有发送成功，这里需要增加一个fromId让base服务器分辨是哪个user
+	int32 toId = 2;	//还需要知道目的id，因为客户端那里需要切换页面，但是返回的消息确认却不知道是哪个朋友的，所以这里需要返回
+	int32 msgId = 3;	//预留的，当前消息id，在写客户端的时候感觉后面完善的时候会用到
+	int32 result = 4;	//标注是1代表是当前在线，已转发给其他服务器处理，-1代表当前客户不在线，已丢弃
+}
+
+message StopServiceRequest{
+	int32 uid = 1;
+}

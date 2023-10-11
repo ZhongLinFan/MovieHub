@@ -1,0 +1,54 @@
+syntax="proto3";
+
+package mediaService;
+
+enum MessageID{
+	ID_UNKNOW = 0; //enum的索引必须为0
+	ID_AddRoomRequest = 1;  //lb服务器给media服务器请求增加房间的请求
+	ID_AddRoomResponse = 2;	
+	ID_DelRoomRequest = 3;	//为什么需要这个呢，因为销毁房间的权力就在负载均衡服务器上了，可以更好的控制
+	ID_DelRoomResponse = 4;  //media服务器给lb服务器的响应
+	//增加用户删除用户其实是客户端在得到udp之后，由客户端和media服务器通过rtp协议进行协商了，所以lb服务器不需要发送addUser的请求了
+	ID_TransRtpPacket = 5; //服务器给客户端发送的rtp包，这个不需要请求和响应，就是服务器发给客户端的
+	ID_RtspRequest = 6;  //客户端给服务器的交互请求
+	ID_RtspResponse = 7;	//服务器给客户端的交互响应
+}
+
+//lb服务器给流媒体服务器发送的增加房间的请求
+message AddRoomRequest{
+	uint32 fid = 1;		//请求的fid
+}
+
+//流媒体给lb服务器回复的响应
+message AddRoomResponse{
+	uint32 fid = 1;		//请求的fid
+	uint32 result = 2;  //开启房间的结果
+	uint32 fromServer = 3; //哪个server回复的，可以将ip和port转为一个整数值，现在可以考虑只使用port就可以
+}
+
+//lb服务器给流媒体服务器发送的删除房间的请求
+message DelRoomRequest{
+	uint32 fid = 1;		//请求的fid
+}
+
+//流媒体给lb服务器回复的响应
+message DelRoomResponse{
+	uint32 fid = 1;		//请求的fid
+	uint32 result = 2;  //开启房间的结果
+	uint32 fromServer = 3; //哪个server回复的，可以将ip和port转为一个整数值，现在可以考虑只使用port就可以
+}
+
+message RtpHeader{
+	//byte0
+	//这些位数千万别写错，要不然会一直赋值不成功，很难排查
+	uint32 base = 1;  //依次存储csrcLen(4),extension(1),padding (1),version(2) //依次存储payloadType(7),marker (1)  uint16_t seq;
+	uint32 timestamp = 2;	//存储timestamp
+	uint32 ssrc = 3;	//存储uint32_t ssrc
+}
+
+message RtpPacket{
+	RtpHeader header = 1;
+	bytes payload = 2;  //这个不需要考虑字节序  注意这个是bytes类型，可以参考https://blog.csdn.net/mao834099514/article/details/114366255，看看两者的关系
+}
+
+

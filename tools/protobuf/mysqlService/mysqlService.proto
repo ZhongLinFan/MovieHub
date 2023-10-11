@@ -1,0 +1,265 @@
+syntax="proto3";
+
+package mysqlService;
+
+/*router系统消息ID定义*/
+//针对router表定义的基本操作
+enum RouterID{
+	ID_RouterUNKNOW = 0; //prot3的enum第一个属性必须为0，用来占位
+	ID_GetRouterRequest = 1;  //负载均衡服务器或者其他服务器向数据库代理服务器请求的路由消息
+	ID_GetRouterResponse = 2; //数据库代理服务器向负载均衡服务器反馈的路由消息
+
+	//增加操作用户表（登录业务需要）
+	//ID_UserLoginRequest = 3;  // 这一个请求对应下面两个响应
+	//ID_GetPasswdResponse = 4;
+	//ID_GetUserInfoResponse = 5;
+	//ID_ModifyStateResponse = 6;
+	//上面定义的不对，mysql的服务应该独立于业务，而应该提供基本的操作，也就是不应该提供登录请求的mysql业务，比如其他业务也需要查询用户信息，总不能用你的吧
+	//并且不能定义一个通用的比如查询，修改，添加，删除这样的id，因为我接受或者发回的protobuf的message根本无从定义，对方也不知道怎么接收的是什么，所以必须
+	//针对表提供基本的数据查询添加删除修改业务，而不是基于baseServer或者LbServer的业务定制基于他们业务（比如基础服务器的登录）的操作
+	//注意，针对friend表，favorite表等不需要设置对应的基础操作，因为这些操作是基于基础表产生的，比如favorite，其实可以理解为users表的一个属性，所以关于这个表的操作
+	//完全可以放在主表中进行
+}
+
+//定义返回的路由消息基类型
+message HostInfo{
+	string ip = 1;   //注意这里是主机字节序
+	int32 port = 2; //注意这里是主机字节序
+}
+
+//定义请求的消息内容格式，这是客户端发给负载均衡模块，以及负载均衡模块的tcp发给mysql服务器的数据格式（因为把发送mysql语句的功能放到mysql服务器上了，负载均衡服务器这里）
+//上面的思考是错误的
+message GetRouterRequest{
+	//string requestSql = 1; 
+	int32 modid = 1;    //要查询的服务器类型(比如1代表流媒体，2代表聊天服务器)
+}
+
+//返回的消息类型
+//1代表基础服务器（包括聊天服务器）
+//2代表流媒体服务器
+message GetRouterResponse{
+	int32 modid = 1;
+	repeated HostInfo host = 2;
+}
+
+/*------------------------------------*/
+//针对users表定义的基本操作
+//注意一个protobuf可以使用多个枚举，只要枚举元素不重复即可
+enum UsersID{
+	ID_UsersUNKNOW = 0; //prot3的enum第一个属性必须为0，用来占位
+	ID_GetUserBaseRequest = 3;   //获取user表的一行信息
+	ID_GetUserBaseResponse = 4;   //user表的一行信息响应
+	ID_ModifyUserRequest = 5;	//修改表的某几列数据,注意一定要有where，否则会修改所有列的数据
+	ID_InsertUserRequest = 6;  //插入一行数据
+	ID_DeleteUserRequest = 7;  //删除一行数据
+	ID_UpdateUserResponse = 8;  //插入删除修改数据库的响应
+	//上面是针对user表本身的操作
+	//下面是针对user表的favorite操作
+	ID_GetUserFavoriteRequest = 9; //查询某个用户的favorite请求
+	ID_GetUserFavoriteResponse = 10; //查询某个用户的favorite响应
+	ID_InsertFavoriteRequest = 11;  //插入一个favorite
+	ID_DeleteFavoriteRequest = 12;  //删除一个favorite
+	ID_UpdateFavoriteResponse = 13; // 插入或者删除一个favorite对应的响应
+	//针对user表的friend操作
+	ID_GetFriendsRequest = 14; //某个用户的friend请求
+	ID_GetFriendsResponse = 15; //某个用户的friend响应
+	ID_InsertFriendRequest = 16;  //插入一个friend
+	ID_DeleteFriendRequest = 17;  //删除一个friend
+	ID_UpdateFriendResponse = 18;
+	//注意，不需要更新，因为更新都是更新frined的user本身的数据
+}
+
+message GetUserBaseRequest{
+	int32 uid = 1;
+}
+
+message GetUserBaseResponse{
+	bool isGot = 1;  //这个可以代表是否查询到了这个人的信息
+	int32 uid = 2;
+	string name = 3;
+	string passwd = 4;
+	bool state = 5;
+}
+
+//修改项
+message ColmPair{
+	string colmName = 1;
+	oneof colmValue{
+		string name = 2;
+		string passwd = 3;
+		bool state = 4;
+	}
+}
+
+//修改请求
+message ModifyUserRequest{
+	int32 uid = 1;
+	repeated ColmPair colms = 2;
+}
+
+//插入请求
+message InsertUserRequest{
+	int32 uid = 1;
+	string name = 2;
+	string passwd = 3;
+}
+
+//删除请求
+message DeleteUserRequest{
+	int32 uid = 1;
+	string name = 2;
+	string passwd = 3;
+	bool state = 4;
+}
+
+//上面三个更新的响应
+message UpdateUserResponse{
+	int32 uid = 1;
+	int32 updateKind = 2;  //操作类型，1代表修改，2代表删除，3代表插入
+	int32 result = 3;  // 1代表更新成功，-1代表更新失败，注意注册的时候不是这样的，注册的时候，uid始终为基础服务器的值，
+	//如果注册成功，result为最新的id，如果注册失败，则和uid值一样
+}
+
+//=========
+//插入一条favorite
+message InsertFavoriteRequest{
+	int32 uid = 1;
+	int32 fid = 2;
+}
+
+//删除一条favorite
+message DeleteFavoriteRequest{
+	int32 uid = 1;
+	int32 fid = 2;
+}
+
+//上面两个更新的响应
+message UpdateFavoriteResponse{
+	int32 uid = 1;
+	int32 updateKind = 2;  //操作类型，1代表添加，2代表删除
+	bool result = 3;  // 1代表更新成功，-1代表更新失败
+}
+
+//========
+
+//添加一个朋友
+message InsertFriendRequest{
+	int32 uid = 1;
+	int32 friend_id = 2;
+}
+
+//删除一个朋友
+message DeleteFriendRequest{
+	int32 uid = 1;
+	int32 friend_id = 2;
+}
+
+//上面二个更新的响应
+message UpdateFriendResponse{
+	int32 uid = 1;
+	int32 updateKind = 2;  //操作类型，1代表添加，2代表删除
+	bool result = 3;  // 1代表更新成功，-1代表更新失败
+}
+
+/*------------------------------------*/
+//针对group表定义的基本操作
+enum GroupID{
+	ID_GroupUNKNOW = 0;
+	//针对group表的操作
+	//创建一个组
+	ID_RegisterGroupRequest = 19;
+	ID_RegisterGroupResponse = 20;
+	//删除一个组
+	ID_DeleteGroupRequest = 21;
+	ID_DeleteGroupResponse = 22;
+	//查询满足一定条件的所有组成员
+	ID_GetGroupMemberRequest = 23;
+	ID_GetGroupMemberResponse = 24;
+	//针对group表的group_member操作
+	//获得某个用户的群列表
+	ID_GetUserGroupsRequest = 25;
+	ID_GetUserGroupsResponse = 26;
+	//增加一个成员
+	ID_AddUserToGroupRequest = 27;
+	ID_AddUserToGroupResponse = 28;
+	//删除一个成员
+	ID_DelUserFromGroupRequest = 29;
+	ID_DelUserFromGroupResponse = 30;
+}
+
+//注册一个组
+message RegisterGroupRequest{
+	int32 uid = 1;
+	string name = 2; 
+	string summary = 3;
+}
+
+message RegisterGroupResponse{
+	int32 uid = 1;
+	int32 gid = 2;
+	bool result = 3;
+}
+
+//删除一个组
+message DeleteGroupRequest{
+	int32 uid = 1;  //必须是群主才能删除
+	int32 gid = 2;   //删除的群
+}
+
+//删除响应
+message DeleteGroupResponse{
+	int32 uid = 1;
+	int32 gid = 2;
+	bool result = 3;
+}
+
+//某群增加一个成员请求
+message AddUserToGroupRequest{
+	int32 uid = 1; 
+	int32 gid = 2;
+}
+
+//某群增加一个成员响应
+message AddUserToGroupResponse{
+	int32 uid = 1;
+	int32 gid = 2;
+	bool result = 3;
+}
+
+//某群删除一个成员请求
+message DelUserFromGroupRequest{
+	int32 uid = 1; 
+	int32 gid = 2;
+}
+
+//某群删除一个成员响应
+message DelUserFromGroupResponse{
+	int32 uid = 1;
+	int32 gid = 2;
+	bool result = 3;
+}
+
+/*------------------------------------*/
+//针对movies表定义的基本操作
+enum MoviesID{
+	ID_MoviesUNKNOW = 0;
+	//获取指定fid的基本信息
+	ID_GetMovieInfoRequest = 31;
+	ID_GetMovieInfoResponse = 32;
+}
+
+message GetMovieInfoRequest{
+	uint32 fid = 1;  //需要获取的fid
+	uint32 fromId = 2; //哪个用户获取的
+}
+
+message GetMovieInfoResponse{
+	uint32 toId = 1; //给哪个用户的
+	uint32 fid = 2; //哪个电影的
+	string name = 3; //电影名称
+	string path = 4; //路径是哪里
+	string summary = 5; //电影概括
+	//后面两个为以后留的接口
+	uint32 hotNums = 6;	//热度指数
+	uint32 type = 7;	//电影类别	
+}

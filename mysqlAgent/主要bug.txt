@@ -1,0 +1,108 @@
+tony@heihei router]$ ./build.sh 
+-bash: ./build.sh: /bin/bash^M: 坏的解释器: 没有那个文件或目录
+原因是在win上编写shell脚本，每行的\n\r,而linux不是，而是\n，所以会报错
+
+2、src/MysqlAgent.cpp: 在构造函数‘MysqlAgent::MysqlAgent(short unsigned int, int, std::string)’中:
+src/MysqlAgent.cpp:9:68: 错误：对‘TcpServer::addMsgRouter(int, std::_Bind<std::_Mem_fn<void (MysqlAgent::*)(NetConnection*, void*)>(MysqlAgent*)>&)’的调用没有匹配的函数
+  m_server->addMsgRouter((int)router::ID_GetRouteRequest, routerFunc);
+                                                                    ^
+src/MysqlAgent.cpp:9:68: 附注：备选是：
+In file included from ./include/MysqlAgent.h:3:0,
+
+在绑定成员函数传递给注册路由函数的时候，不像普通函数那样，直接传递地址就行了，需要绑定，而且绑定的时候，这个绑定的函数有几个形参要指定几个占位符
+auto routerFunc = std::bind(&MysqlAgent::routerHandle, this, std::placeholders::_1, std::placeholders::_2);
+
+3、g++ -g -O2 -Wall -fPIC -std=c++11  -o bin/mysqlAgent ./src/MysqlAgent.o ./src/agent.o ./src/ConnectPool.o ../tools/protobuf/router//router.pb.o -I./include -I/usr/include/mysql  -I../reactor/include -I../tools/protobuf/router/ -L/usr/lib64/mysql -lmysqlclient -lpthread -lm -lrt -ldl -lpthread  -I../reactor/lib -lprotobuf
+
+在编写makefile的时候，没有指定router.pb.cc文件，而是只指定了.o文件，但是明明有下面的：
+%.o: %.cpp
+    $(CXX) $(CFLAGS) -c -o  $@ $< $(INC) 
+
+然后我加了个：
+%.o: %.cc
+
+    $(CXX) $(CFLAGS) -c -o  $@ $< $(INC)
+没问题了
+
+4、g++ -g -O2 -Wall -fPIC -std=c++11  -c -o  ../tools/protobuf/router//router.pb.o ../tools/protobuf/router//router.pb.cc -I./include -I/usr/include/mysql  -I../reactor/include -I../tools/protobuf/router/ 
+mkdir -p bin
+g++ -g -O2 -Wall -fPIC -std=c++11  -o bin/mysqlAgent ./src/MysqlAgent.o ./src/agent.o ./src/ConnectPool.o ../tools/protobuf/router//router.pb.o -I./include -I/usr/include/mysql  -I../reactor/include -I../tools/protobuf/router/ -L/usr/lib64/mysql -lmysqlclient -lpthread -lm -lrt -ldl -lpthread  -I../reactor/lib -lprotobuf
+./src/MysqlAgent.o：在函数‘MysqlAgent::MysqlAgent(unsigned short, int, std::string)’中：
+/home/tony/myprojects/MovieHub/mysqlAgent/src/MysqlAgent.cpp:6：对‘TcpServer::TcpServer(unsigned short, int)’未定义的引用
+/home/tony/myprojects/MovieHub/mysqlAgent/src/MysqlAgent.cpp:9：对‘TcpServer::addMsgRouter(int, std::function<void (NetConnection*, void*)>, void*)’未定义的引用
+发现找不到自己写的静态库的实现，错误1，没有 -I../reactor/lib是-L，2没有指定-lreactor，就会出现找不到
+
+5、在写test文件的时候
+出现
+server.cpp: 在全局域：
+server.cpp:28:5: 警告：‘int main(int, void**)’的第二个参数类型应该是‘char **’ [-Wmain]
+ int main(int argc, void* arg[])
+     ^
+/tmp/cccM56NJ.o：在函数‘GetRouterRequest’中：
+/home/tony/myprojects/MovieHub/mysqlAgent/tests/mysqlAgentV0.2/./../../../tools/protobuf/router/router.pb.h:106：对‘router::GetRouterRequest::GetRouterRequest(google::protobuf::Arena*, bool)’未定义的引用
+/tmp/cccM56NJ.o：在函数‘start(NetConnection*, void*)’中：
+/home/tony/myprojects/MovieHub/mysqlAgent/tests/mysqlAgentV0.2/server.cpp:8：对‘router::GetRouterRequest::~GetRouterRequest()’未定义的引用
+
+cpp文件是
+router::GetRouterRequest responseData;
+	//responseData.set_requestsql("select * from router;");
+	//std::string responseSerial;  
+	//responseData.SerializeToString(&responseSerial);
+	//封装response
+	//auto response = conn->m_response;
+	//response->m_msgid = (int)router::ID_GetRouteRequest;
+	//response->m_data = &responseSerial[0];
+	//response->m_msglen = responseSerial.size();
+	//response->m_state = HandleState::Done; //这一句代表当前响应处理完成，可以让sendMsg函数开始工作了
+	//发送数据到对端
+	//conn->sendMsg();
+MakeFIle是
+
+CXX=g++
+CFLAGS=-g -Wall -O2 -std=c++11 -fPIC
+
+REACTOR=./../../../reactor
+PROTOBUF=./../../../tools/protobuf
+
+INC=-I$(REACTOR)/include -I$(PROTOBUF)/router
+LIB=-L$(REACTOR)/lib -lreactor -lpthread -lprotobuf
+
+all:
+        $(CXX) server.cpp -o server $(CFLAGS) $(INC) $(LIB)
+
+.PHONY:clean
+
+clean:
+        -rm -f *.o reactor
+
+原因是忘记将.cc文件一起编译了，我认为只要包含头文件和动态库就行了，结果任何函数都不能使用
+
+6、DEBUG:src/EventLoop.cpp->tasksProcess->line:151=[任务处理成功]
+DEBUG:src/TcpClient.cpp->connected->line:86=[已连接到127.0.0.1:10000]
+DEBUG:server.cpp->start->line:19=[当前的数据为:1,23,
+select * from router;]
+DEBUG:src/NetConnection.cpp->sendMsg->line:87=[正在执行SendMsg]
+段错误(吐核)
+执行到这一句：Debug("当前的数据为:%d,%d,%d", m_response->m_msgid, m_response->m_msglen, m_response->m_data);  
+
+还是和以前出现过类似的事情，就是父类和子类都有
+ReadBuffer* m_rbuffer;  //这两个由于server使用内存池client不适用，所以需要在子类初始化
+	WriteBuffer* m_wbuffer;
+子类的初始化了，但是父类的没有初始化，但是传递参数的时候是使用多态的，所以使用到了父类的两个没有初始化的buf，导致出现了问题，还是reactor没有清理干净问题
+把子类的属性删掉就可以
+
+7、DEBUG:src/MsgRouter.cpp->call->line:24=[当前业务序号：1]
+DEBUG:src/MsgRouter.cpp->call->line:32=[userData的地址：0]
+DEBUG:src/MysqlAgent.cpp->requestHandle->line:32=[requestHandle开始执行]
+DEBUG:src/MysqlAgent.cpp->packageAndResponse->line:75=[requestHandle开始回复数据]
+DEBUG:src/NetConnection.cpp->sendMsg->line:87=[正在执行SendMsg]
+DEBUG:src/NetConnection.cpp->sendMsg->line:89=[正在执行SendMsg]
+DEBUG:src/NetConnection.cpp->sendMsg->line:90=[m_wbuffer的地址：6b02660]
+DEBUG:src/NetConnection.cpp->sendMsg->line:94=[正在执行SendMsg]
+DEBUG:src/NetConnection.cpp->sendMsg->line:113=[m_response指向的地址：6b076b0]
+DEBUG:src/NetConnection.cpp->sendMsg->line:114=[当前的数据为:2,0]
+DEBUG:src/NetConnection.cpp->sendMsg->line:115=[m_wbuffer->getReadSize():0]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8192,需要扩容的大小：4]
+DEBUG:src/Buffer.cpp->resizeBuffer->line:48=[当前大小：8188,需要扩容的大小：4]
+DEBUG:src/NetConnection.cpp->sendMsg->line:121=[数据写入写缓冲区失败，写数据大小为：0]
+当查表的结果为空时，写数据失败，应该优化逻辑
