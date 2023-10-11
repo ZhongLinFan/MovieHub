@@ -1,6 +1,6 @@
 # MovieHub
 一个提供在线观影需求的服务器。
-# 0. 注意：并没有严格遵守.cpp文件实现函数逻辑，有些函数实现甚至类都是在.h中实现的。
+# 0. 注意：并没有严格遵守.cpp文件实现函数逻辑，有些函数实现、甚至类都是在.h中实现的。
 # 1. 在线影院服务器信息交互示意图如下：
 ![image](https://github.com/ZhongLinFan/MovieHub/blob/main/images/%E5%9C%A8%E7%BA%BF%E5%BD%B1%E9%99%A2%E6%9C%8D%E5%8A%A1%E5%99%A8%E4%BF%A1%E6%81%AF%E4%BA%A4%E4%BA%92%E7%A4%BA%E6%84%8F%E5%9B%BE.PNG)
 # 2. reactor多反应堆架构示意图（以TcpServer为例）
@@ -19,6 +19,11 @@ TODO
 + qps测试程序见./reactor/example/qps
 # 4. 负载均衡服务器架构示意图
 TODO
+其包含 定时更新服务器集群ip信息、 基础/流媒体服务器地址获取请求、房间与服务器集群的关系维护、群/私聊消息转发处理、停止服务处理5个功能模块。
++ **serverMap的成员关系设计比较复杂。**
++ **首先是std::map<int, serverSet> m_serviceConditionMap，key值为modid值，比如1代表基础服务器，serverSet为std::set<ServerCondition*, ServiceConditionCmp>，ServerCondition作为key是为了能够按照server的负载情况进行排序，那么getServer的时候，就会简单很多。不过仅仅这样是不够的，我还需要通过ip找到ServerCondition（比如更新ip的时候，首先就需要通过mysql传过来的ip值定位到ServerCondition），但是遍历serverSet是我比较排斥的，所以我又设计了std::unordered_map<ServerAddr, ServerCondition*, GetHashCode> m_serverMap，这样就可以很快速的定位到ServerCondition(这里有一个隐患，就是ip和port的hash值可能一样，这就导致ip和port，这就导致排序(这个bug的最终解决是在baseServer/主要bug.txt 16)），不过ServerCondition需要有很明确的逻辑所属关系，否则释放的时候容易double或者泄漏。我这里认为ServerCondition属于serverSet，m_serverMap只有使用权。**
++ 定时更新服务器集群ip信息：一个子线程定时的给mysql服务器发送获取路由表更新的请求，并且在得到消息之后更新到serverMap中的serviceConditionMap（更新操作主要依赖于两个函数，**insertServer和submit**）
++ 基础/流媒体服务器地址获取请求：服务器收到客户端的基础服务器ip地址请求之后，会调用serverMap中的getServer（针对基础服务器的重载版本1），然后更新serverMap（updateServer），并返回相应的数据；当收到请求流媒体服务器的地址之后，会调用getServer（针对流媒体服务器的重载版本2，这里处理的逻辑较为复杂，）
 
 # 5. mysql代理服务器架构示意图
 TODO
