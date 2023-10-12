@@ -7,6 +7,7 @@
 ![image](https://github.com/ZhongLinFan/MovieHub/blob/main/images/Reactor%E5%A4%9A%E5%8F%8D%E5%BA%94%E5%A0%86%E6%9E%B6%E6%9E%84%E7%A4%BA%E6%84%8F%E5%9B%BE.png)
 # 3. reactor多反应堆信息交互示意图（以TcpServer为例）
 TODO
+
 其流程大致经过如下步骤：
 +  TcpServer启动之后，会进行一系列的初始化工作，包括buffPool，mainLoop，lfd，threadPool等；
 +  mainLoop运行在主线程中，专门负责接收到来的cfd，如果未达到负载上限，会生成一个TcpConnection（会初始化Channel，并且会绑定对应的回调函数等一系列，如果有hook函数，会执行hook函数），并选择一个子线程中的EvLoop，将一个添加任务交给EvLoop的任务队列，若子线程在睡眠，那么进行唤醒操作，最终这个子线程负责处理这个任务，也就是将这个Channel添加到Select/Poll/Epoll上；
@@ -19,6 +20,7 @@ TODO
 + qps测试程序见./reactor/example/qps
 # 4. 负载均衡服务器架构示意图
 TODO
+
 其包含 定时更新服务器集群ip信息、 基础/流媒体服务器地址获取请求、房间与服务器集群的关系维护、群/私聊消息转发处理、停止服务处理5个功能模块。
 + **serverMap的成员关系设计比较复杂（可能设计的并不合理）。**
 + 0.1. 设计当前结构的背景是在解决baseServer/主要bug.txt中第16个bug进行的，当时面临的情况是按照负载情况排序，使用ip和port查询时会出现找不到的情况，（当时对map的理解并不够深刻，没有意识到底层的红黑树结构是按照负载定的，ip和port则是乱序的，那么按照ip和port查询自然是不可能找到的。），而当时我的诉求是使用负载排序，能够使用ip和port ServerCondition快速的定位到目标。然后想到0.2的思路：
