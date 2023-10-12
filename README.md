@@ -20,11 +20,16 @@ TODO
 # 4. 负载均衡服务器架构示意图
 TODO
 其包含 定时更新服务器集群ip信息、 基础/流媒体服务器地址获取请求、房间与服务器集群的关系维护、群/私聊消息转发处理、停止服务处理5个功能模块。
-+ **serverMap的成员关系设计比较复杂。**
-+ **首先是std::map<int, serverSet> m_serviceConditionMap，key值为modid值，比如1代表基础服务器，serverSet为std::set<ServerCondition*, ServiceConditionCmp>，ServerCondition作为key是为了能够按照server的负载情况进行排序，那么getServer的时候，就会简单很多。不过仅仅这样是不够的，我还需要通过ip找到ServerCondition（比如更新ip的时候，首先就需要通过mysql传过来的ip值定位到ServerCondition），但是遍历serverSet是我比较排斥的，所以我又设计了std::unordered_map<ServerAddr, ServerCondition*, GetHashCode> m_serverMap，这样就可以很快速的定位到ServerCondition(这里有一个隐患，就是ip和port的hash值可能一样，这就导致ip和port，这就导致排序(这个bug的最终解决是在baseServer/主要bug.txt 16)），不过ServerCondition需要有很明确的逻辑所属关系，否则释放的时候容易double或者泄漏。我这里认为ServerCondition属于serverSet，m_serverMap只有使用权。**
-+ 定时更新服务器集群ip信息：一个子线程定时的给mysql服务器发送获取路由表更新的请求，并且在得到消息之后更新到serverMap中的serviceConditionMap（更新操作主要依赖于两个函数，**insertServer和submit**）
-+ 基础/流媒体服务器地址获取请求：服务器收到客户端的基础服务器ip地址请求之后，会调用serverMap中的getServer（针对基础服务器的重载版本1），然后更新serverMap（updateServer），并返回相应的数据；当收到请求流媒体服务器的地址之后，会调用getServer（针对流媒体服务器的重载版本2，这里处理的逻辑较为复杂，）
-
++ **serverMap的成员关系设计比较复杂（可能设计的并不合理）。**
++ 0.1. 设计当前结构的背景是解决baseServer/主要bug.txt中第16个bug，当时面临的情况是按照负载情况排序，使用ip和port查询时会出现找不到的情况，（当时对map的理解并不够深刻，没有意识到底层的红黑树结构是按照负载定的，ip和port则是乱序的，那么按照ip和port查询自然是不可能找到的。），而当时我的诉求是使用负载排序，能够使用ip和port ServerCondition快速的定位到目标。然后想到0.2的思路：
++ 0.2. 首先是std::map<int, serverSet> m_serviceConditionMap，key值为modid值，比如1代表基础服务器，serverSet为std::multiset<ServerCondition*, ServiceConditionCmp>，ServerCondition作为key是为了能够按照server的负载情况进行排序，那么getServer的时候，就会简单很多。不过仅仅这样是不够的，我还需要通过ip找到ServerCondition（比如更新ip的时候，首先就需要通过mysql传过来的ip值定位到ServerCondition），但是遍历serverSet是我比较排斥的，所以我又设计了std::unordered_map<ServerAddr, ServerCondition*, GetHashCode> m_serverMap，这样就可以很快速的定位到ServerCondition，不过ServerCondition需要有很明确的逻辑所属关系，否则释放的时候容易重复释放或者泄漏。我这里认为ServerCondition属于serverSet，m_serverMap只有使用权。
++  0.3. **0.2这个设计可以满足我前面的需求，但是删除serverSet的时候会将相同负载的服务器全都删除掉了（baseServer/主要bug.txt中第16个bug），这显然是不对的，然后就想到设计一个每台服务器任意时刻负载情况一定不同的思路（可能也有其他思路）这样就保证删除的时候肯定能定位到想要的目标，最终想到的是使用一个int值，低16位存储初始评价值，高16位存储运行之后的负载情况，可以将低16位看作小数点之后的当前服务器的唯一id。那么serverSet就没有必要使用multiset，而是改用set即可。这种设计就解决了我的基本需求，当然可能不是最简单的。**
+  -----------------------------------------------------------------------------------------------
++ 1. 定时更新服务器集群ip信息：一个子线程定时的给mysql服务器发送获取路由表更新的请求，并且在得到消息之后更新到serverMap中的serviceConditionMap（更新操作主要依赖于两个函数，**insertServer和submit**）
++ 2. 基础/流媒体服务器地址获取请求：服务器收到客户端的基础服务器ip地址请求之后，会调用serverMap中的getServer（针对基础服务器的重载版本1），然后更新serverMap（updateServer），并返回相应的数据；当收到请求流媒体服务器的地址之后，会调用getServer（针对流媒体服务器的重载版本2，这里处理的逻辑较为复杂，）。
++ 3. 房间与服务器集群关系维护：当收到请求播放某个电影资源的请求之后，会首先查看是否有当前房间，如果有，并且当前房间（std::unordered_map<int, std::map<ServerCondition*, std::unordered_set<int>*, ServiceConditionCmp>> m_mediaRoomMap）的map中有运转良好的服务器，那么分配出去，然后更新负载情况，这个时候需要更新两个map，一个是m_mediaRoomMap还有一个是m_serverMap；如果当前房间服务器map全都满负荷或者是根本没有当前房间的存在，会从m_serverMap获得一个新的服务器放入当前房间，并且更新两个map。如果当前房间某台服务器人数为0，会删除该房间的空载服务器，并且更新，如果当前房间没有服务器，会清除该房间。
++ 4. 群/私聊消息转发处理：如果是私聊，会查询在线用户表，然后找到对应的服务器地址，封装一个消息转发到对应的基础服务器，由对应的基础服务器转发到对应的客户端；如果是群聊，会先向mysql服务器请求当前群聊的在线用户名单，然后查询在线用户表依次发送过去。
++ 5. 停止服务处理：当登录失败或者客户端主动下线时，基础服务器会向负载均衡服务器发送一个停止为某个用户服务的请求，负载均衡服务器负责清理相关信息（在线用户表，对应的基础服务器负载更新，对应的流媒体房间的用户信息更新）。
 # 5. mysql代理服务器架构示意图
 TODO
 # 6. 基础服务器架构示意图
